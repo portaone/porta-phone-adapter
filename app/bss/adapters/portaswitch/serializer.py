@@ -404,6 +404,8 @@ class Serializer:
 
     @staticmethod
     def _call_recording_exist(cdr) -> bool:
-        bit_flags = cdr["bit_flags"]
-
-        return (bit_flags & 64) != 0
+        """Tells whether a call recording exists, by the cr_download_ids the billing
+        returns only for get_xdr_list(with_cr_download_ids=1). The bit_flags bit 64 that
+        used to carry this is not set anymore since MR129 (IUN-1014, WT-1939).
+        """
+        return bool(cdr.get("cr_download_ids"))
