@@ -11,6 +11,16 @@ from .types import (
 )
 
 
+#: Hours of call history the adapter looks back over when the client asks for none.
+#: 24 matches what PortaBilling's own admin and self-care portals send by default.
+DEFAULT_CALL_HISTORY_WINDOW_HOURS = 24
+#: A century, as a sanity bound on the configured window. Well before this the window
+#: already reaches past the 1970 floor the adapter clamps to, so nothing is lost by
+#: refusing to go further - and it keeps the timedelta built from this value nowhere
+#: near the limits of the type.
+CALL_HISTORY_MAX_WINDOW_HOURS = 100 * 365 * 24
+
+
 def parse_string_list(value: Union[List, str, int, None]) -> List[str]:
     if not value:
         return []
@@ -71,6 +81,18 @@ class PortaSwitchSettings(BaseSettings):
     # the switch is queried continuously.
     CONTACTS_CACHE_TTL: int = 0
     CONTACTS_CUSTOM: Union[List[dict], str] = []
+    # Default look-back window (hours) for the call history when the client asks for
+    # it without a date range (WT-1932). PortaBilling partitions CDR_ACCOUNTS by week
+    # on bill_time - the very field from_date/to_date filter - and at the installation
+    # of WT-1932 each non-empty partition held ~9-10M rows across ~30 partitions. The
+    # adapter used to send from_date 1970-01-01 / to_date 9000-01-01, so returning 40
+    # rows made the switch process the lot, twice over (once for the rows, once for
+    # get_total), which took its web services down. 24 hours matches what PortaBilling's
+    # own admin and self-care portals send by default. This is a *default*, never a cap:
+    # a range the client asks for explicitly is passed through untouched, so older
+    # records stay reachable. 0 restores the previous 1970-01-01 .. 9000-01-01 pair
+    # exactly, and anything past CALL_HISTORY_MAX_WINDOW_HOURS is clamped to it.
+    CALL_HISTORY_DEFAULT_WINDOW_HOURS: int = DEFAULT_CALL_HISTORY_WINDOW_HOURS
     HIDE_BALANCE_IN_USER_INFO: Optional[bool] = False
     SELF_CONFIG_PORTAL_URL: Optional[str] = None
     ALLOWED_ADDONS: Union[List[str], str] = []
@@ -115,6 +137,26 @@ class PortaSwitchSettings(BaseSettings):
         except (TypeError, ValueError):
             return 0
         return iv if iv > 0 else 0
+
+    @field_validator("CALL_HISTORY_DEFAULT_WINDOW_HOURS", mode='before')
+    @classmethod
+    def decode_call_history_default_window_hours(cls, v: Union[str, int, None]) -> int:
+        # Like CONTACTS_CACHE_TTL, 0 is meaningful here - it means "no default window",
+        # i.e. the old open-ended query - so blank/invalid/negative collapse to the
+        # 24-hour default rather than to 0. Switching the window off has to be a
+        # deliberate "0", never the result of a stray empty env var. An absurdly large
+        # value is clamped rather than rejected, as a sanity bound - a window that long
+        # already reaches past the floor the adapter clamps to, so it can only be a
+        # typo, and left unbounded it would eventually overflow the timedelta.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_CALL_HISTORY_WINDOW_HOURS
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            return DEFAULT_CALL_HISTORY_WINDOW_HOURS
+        if iv < 0:
+            return DEFAULT_CALL_HISTORY_WINDOW_HOURS
+        return min(iv, CALL_HISTORY_MAX_WINDOW_HOURS)
 
     @field_validator("MAX_CONNECTIONS", mode='before')
     @classmethod

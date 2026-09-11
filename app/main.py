@@ -765,6 +765,13 @@ async def get_user_history_list(
 ]:
     """
     Get user's call history
+
+    `time_from` and `time_to` are optional, and how each is honoured is up to the loaded
+    adapter — some ignore them altogether. The PortaSwitch adapter uses a range given in
+    full as-is however wide, so there is no limit on how far back a client may ask; it
+    fills in only an omitted bound, defaulting `time_to` to now and looking
+    `PORTASWITCH_CALL_HISTORY_DEFAULT_WINDOW_HOURS` (24 by default) back from it, so a
+    client that sends nothing gets recent history rather than the whole archive.
     """
     global bss, bss_capabilities
 

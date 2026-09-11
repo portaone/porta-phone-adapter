@@ -72,3 +72,43 @@ it can be restored from, and is Core's own.
 `voicemailTrash` and `voicemailForward` describe Core behaviour, not PortaSwitch
 behaviour; they are advertised here only so a client can tell a Core that speaks them
 from one that does not.
+
+## Call history date range (PortaSwitch)
+
+`GET /user/history` takes optional `time_from` / `time_to` query parameters and forwards
+them to PortaBilling's `Account/get_xdr_list` as `from_date` / `to_date`. That method
+requires both bounds, so a range is always sent — the only question is what it is when the
+client did not ask for one.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORTASWITCH_CALL_HISTORY_DEFAULT_WINDOW_HOURS` | `24` | How far back to look when the client sends no `time_from`. `0` restores the previous `1970-01-01` → `9000-01-01` pair exactly. A value above a century is clamped as a sanity bound — such a window already reaches past the `1970-01-01` floor |
+
+Only the bounds the client omitted are filled in:
+
+- neither given — the last `…_WINDOW_HOURS` up to now;
+- `time_from` only — from there up to now, however old `time_from` is;
+- `time_to` only — the window measured back from `time_to`;
+- both given — passed through untouched.
+
+**The window is a default, not a cap.** A client that asks for a range gets that range,
+however wide, so older records stay reachable — it just has to ask, which is how
+PortaBilling's own admin and self-care portals behave (they default to the last 24 hours
+and let the user widen it). The one bound worth noting is `time_to` on its own: it no
+longer means "everything up to then" but "the window ending then", so a client that wants
+the older history has to send `time_from` as well.
+
+Both bounds are sent as naive UTC, which is what the PortaBilling API expects — its
+reference states that datetime attributes are received in UTC unless a method says
+otherwise, and `get_xdr_list` does not. An account's `time_zone_name` affects how its
+self-care interface displays a time, not how the API reads one.
+
+Why this matters (WT-1932): PortaBilling partitions `CDR_ACCOUNTS` by week on `bill_time`,
+the field `from_date` / `to_date` filter. At the reporting installation each non-empty
+partition held ~9-10M rows across ~30 partitions, so the old `1970-01-01` → `9000-01-01`
+default made the switch process every partition to return 40 rows — twice, because
+`get_total => 1` counts the same range — and that repeatedly took its web services down.
+
+Note that `from_date` / `to_date` filter on `bill_time` while the response reports
+`connect_time`, so calls right at a window edge can fall on the other side of it than the
+displayed timestamp suggests.
