@@ -115,6 +115,15 @@ _COUNTERS_CACHE_MISS: Final = object()
 #: former ThreadPoolExecutor(max_workers=10) pools). WT-1720.
 FANOUT_LIMIT: Final[int] = 10
 
+#: datetime: Lower bound of the call history before WT-1932 gave it a default window.
+#: It survives as the floor the window is clamped to, so a client-supplied `time_to`
+#: near the edge of the datetime type cannot make the subtraction overflow, and as
+#: half of the pair CALL_HISTORY_DEFAULT_WINDOW_HOURS=0 restores.
+CALL_HISTORY_MIN_DATE: Final[datetime] = datetime(1970, 1, 1)
+
+#: datetime: The matching upper bound, sent only when the window is switched off.
+CALL_HISTORY_MAX_DATE: Final[datetime] = datetime(9000, 1, 1)
+
 #: Fields of a PortaBilling account record that the contacts path reads — the
 #: local filter, the serializer, and the alias/master lookups. The full record
 #: has 57 fields and costs ~2.9 KB per account as Python objects against ~0.5 KB
@@ -1428,6 +1437,102 @@ class PortaSwitchAdapter(BSSAdapter):
 
         return Serializer.get_contact_info_by_account(account_info, int(user.user_id))
 
+    def _call_history_range(
+            self, time_from: datetime | None, time_to: datetime | None
+    ) -> tuple[datetime, datetime]:
+        """Resolves the call history date range that is sent to PortaBilling.
+
+        `get_xdr_list` requires both `from_date` and `to_date` (they are optional only
+        alongside an `h323_conf_id`, which does not apply to a history list), so a range
+        always has to be supplied. The adapter used to supply 1970-01-01 .. 9000-01-01,
+        which is every CDR partition the switch has - see WT-1932 and
+        CALL_HISTORY_DEFAULT_WINDOW_HOURS.
+
+        Only the bounds the client left out are filled in. A range the client asked for
+        explicitly is never narrowed, because narrowing it would silently hide records
+        the user went looking for; the window is how far back we look when nobody said,
+        not a limit on how far back we can look.
+
+        Both bounds are returned as naive UTC. PortaBilling's API "expects to receive
+        datetimes in the UTC time zone (unless the method description explicitly mentions
+        otherwise)", and `get_xdr_list`'s description mentions nothing of the sort - an
+        account's `time_zone_name` governs how its self-care interface displays a time,
+        not how the API reads one. Naive is also what `get_xdr_list` sends: it formats
+        with `strftime`, which drops an aware datetime's offset and would put its wall
+        clock on the wire unshifted. On top of that Core hands us aware datetimes (its
+        OpenAPI `date-time` cast) while our own defaults are naive, and mixing the two
+        raises TypeError on the first comparison - which nothing here would turn into
+        anything but a 500.
+
+        Parameters:
+            time_from (datetime | None): Start of the range as the client asked for it.
+            time_to (datetime | None): End of the range as the client asked for it.
+
+        Returns:
+            tuple[datetime, datetime]: The naive-UTC range to filter the CDRs by.
+        """
+        window_hours = self._portaswitch_settings.CALL_HISTORY_DEFAULT_WINDOW_HOURS
+
+        time_from = self._as_naive_utc(time_from)
+        time_to = self._as_naive_utc(time_to)
+
+        if time_to is None:
+            # With the window switched off the pair has to stay exactly what it was
+            # before WT-1932, upper bound included, or "0 restores the old behaviour"
+            # would quietly stop being true.
+            time_to = datetime.now(UTC).replace(tzinfo=None) if window_hours else CALL_HISTORY_MAX_DATE
+
+        if time_from is None:
+            time_from = self._call_history_window_start(time_to, window_hours)
+
+        return time_from, time_to
+
+    @staticmethod
+    def _call_history_window_start(time_to: datetime, window_hours: int) -> datetime:
+        """Returns the start of the default window ending at `time_to`.
+
+        Subtracting from a datetime raises OverflowError near the type's edges, and
+        `time_to` can come straight off the query string, so a `time_to` in year 1 would
+        otherwise reach the client as a bare 500. The range is empty either way in that
+        case, so clamping to the floor loses nothing.
+
+        Parameters:
+            time_to (datetime): End of the range, already resolved.
+            window_hours (int): The configured window; 0 means no window at all.
+
+        Returns:
+            datetime: The lower bound to filter the CDRs by.
+        """
+        if not window_hours:
+            return CALL_HISTORY_MIN_DATE
+
+        window = timedelta(hours=window_hours)
+        if time_to - CALL_HISTORY_MIN_DATE <= window:
+            return CALL_HISTORY_MIN_DATE
+
+        return time_to - window
+
+    @staticmethod
+    def _as_naive_utc(value: datetime | None) -> datetime | None:
+        """Converts an aware datetime to naive UTC, leaving a naive one alone.
+
+        Parameters:
+            value (datetime | None): The datetime to normalise.
+
+        Returns:
+            datetime | None: The same moment expressed as a naive UTC datetime.
+        """
+        if value is None or value.tzinfo is None:
+            return value
+
+        try:
+            return value.astimezone(UTC).replace(tzinfo=None)
+        except OverflowError:
+            # A bound at the very edge of the datetime type cannot be shifted by its
+            # own offset. The client asked for something outside any range the switch
+            # holds, so its wall clock is as close as we can get without raising.
+            return value.replace(tzinfo=None)
+
     async def retrieve_calls(
             self,
             session: SessionInfo,
@@ -1444,8 +1549,9 @@ class PortaSwitchAdapter(BSSAdapter):
             user (UserInfo): The information about the PortaSwitch account.
             page (int): The page number of the CDR history to return.
             items_per_page (int): The number of items per page.
-            time_from (datetime | None): Start of the time range filter. Defaults to 1970-01-01.
-            time_to (datetime | None): End of the time range filter. Defaults to year 9000.
+            time_from (datetime | None): Start of the time range filter. When omitted it
+                defaults to CALL_HISTORY_DEFAULT_WINDOW_HOURS before the end of the range.
+            time_to (datetime | None): End of the time range filter. Defaults to now.
 
         Returns:
             tuple[list[CDRInfo], int]: A tuple containing the list of CDR records and the total
@@ -1455,8 +1561,7 @@ class PortaSwitchAdapter(BSSAdapter):
             WebTritErrorException: If the user is not found or the session is invalid.
         """
         try:
-            time_from: datetime = time_from if time_from else datetime(1970, 1, 1)
-            time_to: datetime = time_to if time_to else datetime(9000, 1, 1)
+            time_from, time_to = self._call_history_range(time_from, time_to)
 
             result: dict = await self._account_api.get_xdr_list(
                 access_token=safely_extract_scalar_value(session.access_token),
