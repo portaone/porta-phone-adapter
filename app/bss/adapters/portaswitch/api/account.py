@@ -257,6 +257,7 @@ class AccountAPI(AsyncHTTPAPIConnector):
                 "i_service_type": 3,
                 "get_total": 1,
                 "show_unsuccessful": 1,
+                "with_cr_download_ids": 1,
                 "limit": items_per_page,
                 "offset": items_per_page * (page - 1),
                 "from_date": time_from.strftime("%Y-%m-%d %H:%M:%S"),
