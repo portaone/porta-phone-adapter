@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9b4ba321_21e9d136",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 1
+      },
+      "lineNbr": 7,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-09-15T09:01:58Z",
+      "side": 1,
+      "message": "Please use WT-1967.\nWT-1967 Bump adapter patch version to 1.1.2-r1",
+      "range": {
+        "startLine": 7,
+        "startChar": 0,
+        "endLine": 7,
+        "endChar": 58
+      },
+      "revId": "a6eb8e77626cdb593a0e3cc37bdb2c0030e7824f",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
