@@ -57,6 +57,20 @@ The env variable name is `CAPABILITIES_<OPTION>` — prefixed with `<APP_NAME>_`
 booleans (`1`/`true`/`yes`/`y`). A capability the adapter class does not list cannot be
 switched on.
 
+Presence (WT-1834):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CAPABILITIES_DIRECT_PRESENCE` | `true` | Presence exchanged between WebTrit apps over Core's own PubSub. Never touches SIP or PortaSwitch |
+| `CAPABILITIES_SIP_PRESENCE` | `true` | Presence over SIP PUBLISH/SUBSCRIBE, from the user's subscription book |
+| `CAPABILITIES_SIP_DIALOGS` | `true` | Dialog-info subscriptions: Call Pull and contact BLF |
+
+The three are independent transports. `directPresence` describes Core behaviour rather
+than PortaSwitch behaviour, but unlike `conference` it is not advertising: Core requires
+the entry, so switching it off stops a controller publishing its own status and reading
+anyone else's. Leave it on unless a deployment is large enough that app-to-app presence
+is not worth its cost.
+
 Voicemail (WT-1878):
 
 | Variable | Default | Purpose |

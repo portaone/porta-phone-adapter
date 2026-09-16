@@ -233,6 +233,11 @@ class PortaSwitchAdapter(BSSAdapter):
         Capabilities.sms_messaging,
         Capabilities.notifications,
         Capabilities.notifications_push,
+        # Presence exchanged between WebTrit apps over Core's own PubSub, never
+        # touching SIP or PortaSwitch. Core requires this entry: without it a
+        # controller neither publishes its own status nor reads anyone else's,
+        # so unlike `conference` this is a real switch, not advertising (WT-1834).
+        Capabilities.direct_presence,
         Capabilities.sip_presence,
         Capabilities.sip_dialogs,
         # Merging calls into a conference happens entirely in Core and Janus -

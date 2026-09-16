@@ -588,6 +588,7 @@ class SupportedEnum(Enum):
     user_events = "userEvents"
     notifications = "notifications"
     notifications_push = "notificationsPush"
+    direct_presence = "directPresence"
     sip_presence = "sipPresence"
     sip_dialogs = "sipDialogs"
     conference = "conference"

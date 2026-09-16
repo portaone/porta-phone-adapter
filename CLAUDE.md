@@ -83,6 +83,14 @@ with `voicemail` itself. `voicemailForward` is the one Core reads: it refuses fo
 when the entry is absent, so switching that one off changes behaviour, not just what
 clients are told.
 
+`directPresence` (WT-1834) is the same kind of entry as `voicemailForward`, not the same
+kind as `conference`: the feature is Core's own - presence exchanged between WebTrit apps
+over PubSub, never reaching PortaSwitch - but Core *requires* the entry. A controller
+whose tenant does not advertise it neither publishes its own status nor reads anyone
+else's. There is no implicit default on the Core side, so an adapter that does not report
+`directPresence` switches the feature off for every tenant it serves; `default=True` here
+is what keeps an upgrade from doing that silently.
+
 `calculate_capabilities()` copies the class list before editing it
 (`capabilities = list(self.CAPABILITIES)`), and that copy is load-bearing: for the
 PortaSwitch adapter the method **runs twice** — once in `__init__`, once in
