@@ -115,7 +115,19 @@ means the documented template to copy does not honour either mechanism.
   pool slot (WT-1922). Streamed downloads hand their permit back once headers arrive.
 - **`failover.py`** — disaster-recovery site switching. Detecting that the main site is
   down is reactive (timeouts), while switching *back* is authoritative
-  (`operating_mode` from `generic.get_session_data`).
+  (`operating_mode` from `generic.get_session_data`). It also owns the PortaBilling
+  fault-code sets both realms read. `SESSION_AUTH_FAULTS` is the one that outlives the
+  switch: PortaSwitch sessions are site-local, so after a failover every token the app
+  still holds was minted by the other site and is refused. The admin realm logs in again
+  and retries (`admin.py`); the account realm cannot — that session is the subscriber's —
+  so `account.py` reports `401 access_token_expired`, and only for Bearer-authenticated
+  calls (WT-1814). `Session/login`, `/refresh_access_token`, `/logout` and `/ping` pass
+  their token as a *parameter*, not a header, and keep their own, more specific errors —
+  `refresh_session`'s `refresh_token_invalid` among them. The one crossover is the Bearer
+  `get_account_info` that `refresh_session` makes inside that same `try`: it now answers
+  `access_token_expired`, which is the deliberate trade-off of mapping centrally. Carrying
+  the session across sites is a platform gap (BA-47630 / BA-47622), not something the
+  adapter can close.
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 

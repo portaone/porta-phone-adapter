@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import AsyncIterator, Final, List, Optional, Union
 
@@ -5,8 +6,8 @@ import httpx
 from jose import jwt
 
 from bss.adapters.portaswitch.config import PortaSwitchSettings
-from bss.adapters.portaswitch.exceptions import service_read_only_error
-from bss.adapters.portaswitch.failover import READ_ONLY_FAULTS
+from bss.adapters.portaswitch.exceptions import access_token_expired_error, service_read_only_error
+from bss.adapters.portaswitch.failover import READ_ONLY_FAULTS, SESSION_AUTH_FAULTS
 from bss.adapters.portaswitch.types import PortaSwitchMailboxMessageFlag, PortaSwitchMailboxMessageFlagAction
 from bss.adapters.portaswitch.utils import extract_fault_code
 from bss.async_http_api import AsyncHTTPAPIConnector
@@ -70,10 +71,26 @@ class AccountAPI(AsyncHTTPAPIConnector):
                 stream=stream,
             )
         except WebTritErrorException as error:
+            fault_code = extract_fault_code(error)
             # A read-only (secondary/standalone) site rejects writes/updates with
             # a specific fault; surface a clear domain error instead of a 500.
-            if extract_fault_code(error) in READ_ONLY_FAULTS:
+            if fault_code in READ_ONLY_FAULTS:
                 raise service_read_only_error()
+            # The site that answered does not accept this session token. After a
+            # DR failover that is the expected outcome for a token the app still
+            # holds, because PortaSwitch sessions are site-local (WT-1814); the
+            # account realm cannot log in again on the subscriber's behalf, so the
+            # honest answer is "log in again", not a generic 500.
+            #
+            # Only Bearer-authenticated calls are mapped: Session/login,
+            # /refresh_access_token, /logout and /ping carry their token as a
+            # parameter instead, and keep their own, more specific errors.
+            if access_token and fault_code in SESSION_AUTH_FAULTS:
+                logging.warning(
+                    f"PortaSwitch rejected the account session token ({fault_code}) on "
+                    f"{module}/{method}; reporting it as an expired access token"
+                )
+                raise access_token_expired_error()
             raise error
 
         return result

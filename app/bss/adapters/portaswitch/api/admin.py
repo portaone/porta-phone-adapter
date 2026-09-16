@@ -3,7 +3,7 @@ from typing import Optional
 
 from bss.adapters.portaswitch.config import PortaSwitchSettings
 from bss.adapters.portaswitch.exceptions import service_read_only_error
-from bss.adapters.portaswitch.failover import READ_ONLY_FAULTS
+from bss.adapters.portaswitch.failover import READ_ONLY_FAULTS, SESSION_AUTH_FAULTS
 from bss.adapters.portaswitch.types import PortaSwitchAdminUser
 from bss.adapters.portaswitch.utils import extract_fault_code
 from bss.async_http_api import AsyncHTTPAPIConnector, AsyncHTTPAPIConnectorWithLogin, OAuthSessionData
@@ -458,10 +458,7 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
             )
         except WebTritErrorException as error:
             fault_code = extract_fault_code(error)
-            if fault_code in (
-                    'Server.Session.check_auth.auth_failed',
-                    'Client.Session.check_auth.failed_to_process_access_token',
-            ):
+            if fault_code in SESSION_AUTH_FAULTS:
                 logging.warning(f"Unexpected session error from PBX: {error}. Trying to refresh access token...")
                 await self.refresh()
 

@@ -44,6 +44,19 @@ READ_ONLY_FAULTS = frozenset(
     }
 )
 
+# Faults returned when the site that answered does not accept the session token
+# presented with the request. After a failover that is the normal outcome for a
+# token the app is still holding: PortaSwitch sessions are site-local, so one
+# minted by the main site means nothing to the standby (BA-47630 / BA-47622).
+# The admin realm recovers by logging in again; the account realm cannot - the
+# session belongs to the subscriber - so it reports an expired token (WT-1814).
+SESSION_AUTH_FAULTS = frozenset(
+    {
+        "Server.Session.check_auth.auth_failed",
+        "Client.Session.check_auth.failed_to_process_access_token",
+    }
+)
+
 # operating_mode values reported by generic.get_session_data (BA-47641).
 OPERATING_MODE_NORMAL = "normal"
 OPERATING_MODE_SECONDARY = "secondary"
