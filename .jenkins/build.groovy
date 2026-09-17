@@ -12,6 +12,8 @@
 // The job also builds when a v* tag is pushed to this repository: the Gerrit ref-updated
 // event supplies GERRIT_REFNAME. The trigger accepts only that pattern, so any other ref
 // arriving here fails the build with an explanation instead of being ignored.
+// A deleted tag arrives as the same ref-updated event with GERRIT_NEWREV all zeros; the run
+// then ends as NOT_BUILT without a failure email, because there is nothing to build.
 //
 // Only the root Dockerfile is in scope. The repository also holds tests/Dockerfile and
 // app/bss/adapters/portaswitch/Dockerfile, which the old workflow never built either.
@@ -55,6 +57,14 @@ pipeline {
           if (env.GERRIT_EVENT_TYPE == 'ref-updated' && env.GERRIT_REFNAME) {
             if (!env.GERRIT_REFNAME.startsWith('refs/tags/v')) {
               error("Triggered by ${env.GERRIT_REFNAME}, which is not a release tag; the Gerrit trigger should only accept refs/tags/v*.")
+            }
+            // Gerrit emits ref-updated for a tag deletion as well, with GERRIT_NEWREV all zeros,
+            // and the trigger cannot filter deletions out. There is nothing to build, so stop
+            // here as NOT_BUILT: a build result can only get worse, and NOT_BUILT already ranks
+            // above the FAILURE that error() would set, so post { failure } does not fire.
+            if (env.GERRIT_NEWREV ==~ /^0+$/) {
+              currentBuild.result = 'NOT_BUILT'
+              error("Tag ${env.GERRIT_REFNAME} was deleted; nothing to build.")
             }
             env.SRC = env.GERRIT_REFNAME.replaceFirst('^refs/tags/', '')
           } else {
@@ -169,7 +179,9 @@ pipeline {
     always {
       // The artefact has been archived by now; drop the local tag so the shared agent does not
       // accumulate one image per build.
-      sh 'docker rmi "$IMAGE:$VERSION" || true'
+      // VERSION is unset when the run stops before 'Resolve version' (a deleted tag, a bad
+      // ref); skip the removal then rather than log 'invalid reference format'.
+      sh '[ -z "${VERSION:-}" ] || docker rmi "$IMAGE:$VERSION" || true'
       sh 'docker logout || true'
       cleanWs()
     }
