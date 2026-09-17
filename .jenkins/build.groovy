@@ -12,8 +12,8 @@
 // The job also builds when a v* tag is pushed to this repository: the Gerrit ref-updated
 // event supplies GERRIT_REFNAME. The trigger accepts only that pattern, so any other ref
 // arriving here fails the build with an explanation instead of being ignored.
-// A deleted tag arrives as the same ref-updated event with GERRIT_NEWREV all zeros; the run
-// then ends as NOT_BUILT without a failure email, because there is nothing to build.
+// A deleted tag arrives as the same ref-updated event with GERRIT_NEWREV all zeros; it is
+// ignored - Checkout logs that, every later stage is skipped and the run ends as SUCCESS.
 //
 // Only the root Dockerfile is in scope. The repository also holds tests/Dockerfile and
 // app/bss/adapters/portaswitch/Dockerfile, which the old workflow never built either.
@@ -59,30 +59,34 @@ pipeline {
               error("Triggered by ${env.GERRIT_REFNAME}, which is not a release tag; the Gerrit trigger should only accept refs/tags/v*.")
             }
             // Gerrit emits ref-updated for a tag deletion as well, with GERRIT_NEWREV all zeros,
-            // and the trigger cannot filter deletions out. There is nothing to build, so stop
-            // here as NOT_BUILT: a build result can only get worse, and NOT_BUILT already ranks
-            // above the FAILURE that error() would set, so post { failure } does not fire.
+            // and the trigger cannot filter deletions out. There is nothing to build, so the
+            // event is ignored: the return skips the clone below, SKIP_BUILD makes every later
+            // stage skip itself, and the run ends as SUCCESS with no email.
             if (env.GERRIT_NEWREV ==~ /^0+$/) {
-              currentBuild.result = 'NOT_BUILT'
-              error("Tag ${env.GERRIT_REFNAME} was deleted; nothing to build.")
+              env.SKIP_BUILD = 'true'
+              currentBuild.description = "${env.GERRIT_REFNAME} was deleted - ignored"
+              echo "Tag ${env.GERRIT_REFNAME} was deleted; nothing to build. Ignoring the event."
+              return
             }
             env.SRC = env.GERRIT_REFNAME.replaceFirst('^refs/tags/', '')
           } else {
             env.SRC = (params.SRC_REF ?: 'main').trim()
             if (!env.SRC) { error('SRC_REF must not be empty') }
           }
+          // changelog: false - the git plugin computes it with 'git whatchanged', which the
+          // agent's git refuses to run (deprecated); it only produced a stack trace per build.
+          checkout(changelog: false, poll: false, scm: [$class: 'GitSCM',
+                    branches: [[name: env.SRC]],
+                    userRemoteConfigs: [[url: env.REPO_URL,
+                                         refspec: '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*']]])
+          sh 'git --no-pager log -1 --oneline'
         }
-        // changelog: false - the git plugin computes it with 'git whatchanged', which the
-        // agent's git refuses to run (deprecated); it only produced a stack trace per build.
-        checkout(changelog: false, poll: false, scm: [$class: 'GitSCM',
-                  branches: [[name: env.SRC]],
-                  userRemoteConfigs: [[url: env.REPO_URL,
-                                       refspec: '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*']]])
-        sh 'git --no-pager log -1 --oneline'
       }
     }
 
     stage('Resolve version') {
+      // Skipped when Checkout ignored a tag deletion (SKIP_BUILD); so are the stages below.
+      when { expression { env.SKIP_BUILD != 'true' } }
       steps {
         script {
           def sha = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
@@ -106,12 +110,14 @@ pipeline {
     }
 
     stage('Docker preflight') {
+      when { expression { env.SKIP_BUILD != 'true' } }
       steps {
         sh 'docker version && docker info --format "server={{.ServerVersion}} driver={{.Driver}} root={{.DockerRootDir}}"'
       }
     }
 
     stage('Build image') {
+      when { expression { env.SKIP_BUILD != 'true' } }
       steps {
         // The base image comes from Docker Hub, whose anonymous pull limit is shared by
         // everything behind this agent's address; authenticating lifts it. A missing
@@ -142,6 +148,7 @@ pipeline {
     }
 
     stage('Export image') {
+      when { expression { env.SKIP_BUILD != 'true' } }
       steps {
         // The image is this job's only output while the push is not executed, so it has to
         // leave the agent as a build artefact or the run produces nothing.
@@ -155,6 +162,7 @@ pipeline {
     }
 
     stage('Publish') {
+      when { expression { env.SKIP_BUILD != 'true' } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'harbor-webtrit-ci-rw',
                                           usernameVariable: 'REG_USR', passwordVariable: 'REG_PSW')]) {
