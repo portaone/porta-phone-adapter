@@ -36,10 +36,12 @@ from bss.adapters.portaswitch.types import (
     PortaSwitchMailboxMessageFlag,
     PortaSwitchMailboxMessageFlagAction,
 )
-from bss.types import Capabilities, SessionInfo, UserVoicemailMessagePatch
+from bss.types import Capabilities, SessionInfo, UserInfo, UserVoicemailMessagePatch
+from report_error import WebTritErrorException
 
 MESSAGE_ID = "1654"
 SESSION = SessionInfo(user_id="102398", access_token="tok")
+USER = UserInfo(user_id="102398")
 
 SET = PortaSwitchMailboxMessageFlagAction.SET
 UNSET = PortaSwitchMailboxMessageFlagAction.UNSET
@@ -287,3 +289,155 @@ class TestCapabilityCalculation:
 
     def test_repeated_calls_agree(self):
         assert capabilities_of(VOICEMAIL="1") == capabilities_of(VOICEMAIL="1")
+
+
+# --------------------------------------------------------------------------- #
+# A message deleted outside WebTrit is a 404, not a crash (WT-1992)
+# --------------------------------------------------------------------------- #
+#
+# PortaBilling does not report a message_uid that has left the mailbox as missing.
+# Asked for a deleted 576 it answered 200 describing message 578, stripped of
+# `subject`, `from`, `to` and `voicemail_duration` - enough for get_voicemail_message
+# to serialize, so the crash landed on `from`. Asked for the attachment of a deleted
+# message it answered with a JSON body instead of the media file, which decode_response
+# hands back as a dict and the route unpacks as a pair.
+
+STALE_ID = "576"
+LIVE_ID = "578"
+
+
+def details_record(message_uid, complete=True):
+    """A details record shaped the way PortaBilling returns it, `complete` carrying the
+    header fields that the record of a vanished message comes without."""
+    record = {
+        "message_uid": message_uid,
+        "size": 311,
+        "flags": ["\\Seen"],
+        "delivery_date": "18-Sep-2026 09:00:56 +0000",
+        "body_structures": [
+            {"bodytype": "audio", "bodysubtype": "mp3", "bodysize": 136, "file_name": "vm.mp3"},
+        ],
+    }
+    if complete:
+        record.update({
+            "subject": "Voice Message",
+            "voicemail_duration": 14.303,
+            "from": "Caller #555020 <555020@ip3.example.com>",
+            "to": "555022 <555022@ip3.example.com>",
+        })
+    return record
+
+
+class FakeMailboxAPI:
+    """Answers the two read calls with whatever PortaBilling is being made to say."""
+
+    def __init__(self, details=None, attachment=None):
+        self._details = details
+        self._attachment = attachment
+
+    async def get_mailbox_message_details(self, access_token, message_id):
+        return self._details
+
+    async def get_mailbox_message_attachment(self, access_token, message_id, file_format):
+        return self._attachment
+
+
+def mailbox_adapter(details=None, attachment=None):
+    subject = object.__new__(PortaSwitchAdapter)
+    subject._account_api = FakeMailboxAPI(details, attachment)
+    return subject
+
+
+def assert_message_not_found(error):
+    assert error.value.status_code == 404
+    assert error.value.code == "message_not_found"
+
+
+class TestStaleVoicemailMessageDetails:
+    @pytest.mark.asyncio
+    async def test_the_answer_describing_another_message_is_not_found(self):
+        # The payload from the ticket: asked for 576, answered about 578 without `from`.
+        subject = mailbox_adapter(details=details_record(578, complete=False))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_details(SESSION, USER, STALE_ID)
+
+        assert_message_not_found(error)
+
+    @pytest.mark.asyncio
+    async def test_a_complete_record_of_another_message_is_not_found_either(self):
+        # The dangerous half: nothing in a complete foreign record raises, so without
+        # the id check this used to answer 200 describing message 578 under id 576.
+        subject = mailbox_adapter(details=details_record(578))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_details(SESSION, USER, STALE_ID)
+
+        assert_message_not_found(error)
+
+    @pytest.mark.asyncio
+    async def test_the_requested_message_without_headers_is_not_found(self):
+        # Right id, unusable record: sender/receiver are required by the wire model, so
+        # there is nothing to answer with - and nothing to raise KeyError over either.
+        subject = mailbox_adapter(details=details_record(578, complete=False))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_details(SESSION, USER, LIVE_ID)
+
+        assert_message_not_found(error)
+
+    @pytest.mark.asyncio
+    async def test_the_requested_message_is_still_served(self):
+        subject = mailbox_adapter(details=details_record(578))
+
+        details = await subject.retrieve_voicemail_message_details(SESSION, USER, LIVE_ID)
+
+        assert details.id == "578"
+        assert details.sender == "555020"
+        assert details.receiver == "555022"
+
+
+class TestVoicemailMessageIdentity:
+    """PortaBilling answers with an int, the id travels the URL as a string."""
+
+    def test_the_int_and_the_string_are_the_same_message(self):
+        assert Serializer.is_voicemail_message_details_for(details_record(578), "578")
+
+    def test_a_surrounding_space_does_not_make_it_another_message(self):
+        assert Serializer.is_voicemail_message_details_for(details_record(578), " 578 ")
+
+    def test_another_id_is_another_message(self):
+        assert not Serializer.is_voicemail_message_details_for(details_record(578), "576")
+
+    def test_a_non_numeric_id_matches_nothing(self):
+        assert not Serializer.is_voicemail_message_details_for(details_record(578), "not-a-uid")
+
+    def test_an_answer_without_an_id_is_refused(self):
+        record = details_record(578)
+        del record["message_uid"]
+        assert not Serializer.is_voicemail_message_details_for(record, "578")
+
+
+class TestStaleVoicemailMessageAttachment:
+    @pytest.mark.asyncio
+    async def test_a_json_answer_instead_of_the_media_file_is_not_found(self):
+        # decode_response turns PortaBilling's JSON into a dict; the route would unpack
+        # it as (content_type, iterator) and raise ValueError.
+        subject = mailbox_adapter(attachment={"message_uid": 578})
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, STALE_ID, "mp3")
+
+        assert_message_not_found(error)
+
+    @pytest.mark.asyncio
+    async def test_a_real_attachment_is_passed_through(self):
+        async def chunks():
+            yield b"audio"
+
+        iterator = chunks()
+        subject = mailbox_adapter(attachment=("audio/mpeg", iterator))
+
+        assert await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "mp3") == (
+            "audio/mpeg", iterator
+        )

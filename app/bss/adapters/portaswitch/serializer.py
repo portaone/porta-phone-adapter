@@ -317,6 +317,41 @@ class Serializer:
         )
 
     @staticmethod
+    def is_voicemail_message_details_for(mailbox_message_details: dict, message_id: str) -> bool:
+        """Tells whether this details record really describes the message that was asked for.
+
+        PortaBilling does not report a message_uid that has left the mailbox as missing:
+        it answers 200 carrying another message of the same mailbox, stripped of
+        `subject`, `from`, `to` and `voicemail_duration` (WT-1992). The remaining fields
+        are all `get_voicemail_message` needs, so such a record serializes happily as far
+        as `from` - which is where it used to raise KeyError. Both halves of the test
+        matter: the id keeps a complete foreign record from being served under the
+        requested id, and the fields keep a stripped one from crashing.
+
+        Parameters:
+            mailbox_message_details: dict: The details as returned by PortaBilling.
+            message_id: str: The id the request asked for.
+
+        Returns:
+            bool: True when the record is the requested message and is usable.
+        """
+        if not isinstance(mailbox_message_details, dict):
+            return False
+
+        returned_id = mailbox_message_details.get("message_uid")
+        if returned_id is None:
+            return False
+
+        # PortaBilling answers with an int while the id travels the URL as a string;
+        # compare numerically when both sides parse, textually when they do not.
+        try:
+            same_message = int(returned_id) == int(str(message_id).strip())
+        except (TypeError, ValueError):
+            same_message = str(returned_id).strip() == str(message_id).strip()
+
+        return same_message and "from" in mailbox_message_details and "to" in mailbox_message_details
+
+    @staticmethod
     def get_voicemail_message_details(mailbox_message_details: dict) -> VoicemailMessageDetails:
         """
         Forms VoicemailMessageDetails based on the input mailbox_message_details.

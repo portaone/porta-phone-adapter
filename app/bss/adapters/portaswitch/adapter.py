@@ -67,6 +67,7 @@ from .exceptions import (
     session_upgrade_needed_error,
     voicemail_not_configured,
     not_found_call_queue_error,
+    not_found_voicemail_message_error,
 )
 from .serializer import Serializer
 from .types import (
@@ -1677,8 +1678,6 @@ class PortaSwitchAdapter(BSSAdapter):
                 safely_extract_scalar_value(session.access_token), message_id
             )
 
-            return Serializer.get_voicemail_message_details(message_details)
-
         except WebTritErrorException as error:
             fault_code = extract_fault_code(error)
             if fault_code in ("Client.Session.check_auth.failed_to_process_access_token",):
@@ -1687,6 +1686,21 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise voicemail_not_configured()
 
             raise error
+
+        # A message deleted outside WebTrit - over the IVR, say - while the client's list
+        # is still stale is not reported as missing: PortaBilling answers 200 describing
+        # another message of the mailbox (WT-1992). Checked outside the `except` above on
+        # purpose - extract_fault_code re-raises anything carrying no fault trace, so a
+        # 404 raised inside it would pass through only by accident.
+        if not Serializer.is_voicemail_message_details_for(message_details, message_id):
+            logging.warning(
+                f"PortaSwitch returned no usable details for the voicemail message {message_id} "
+                f"(the answer describes message {message_details.get('message_uid')}); "
+                f"reporting the message as not found"
+            )
+            raise not_found_voicemail_message_error(message_id)
+
+        return Serializer.get_voicemail_message_details(message_details)
 
     async def retrieve_voicemail_message_attachment(
             self, session: SessionInfo, message_id: str, file_format: str
@@ -1708,7 +1722,7 @@ class PortaSwitchAdapter(BSSAdapter):
             raise unsupported_file_format_error()
 
         try:
-            return await self._account_api.get_mailbox_message_attachment(
+            attachment = await self._account_api.get_mailbox_message_attachment(
                 safely_extract_scalar_value(session.access_token),
                 message_id,
                 file_format or PortaSwitchMailboxMessageAttachmentFormat.WAV.value,
@@ -1722,6 +1736,21 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise voicemail_not_configured()
 
             raise error
+
+        # For a message deleted outside WebTrit PortaBilling answers this call with a JSON
+        # body instead of the media file, and decode_response hands a JSON body back as a
+        # dict - which the route then unpacks as a (content_type, iterator) pair and fails
+        # on (WT-1992). The message is simply not in the mailbox any more.
+        if not isinstance(attachment, tuple):
+            logging.warning(
+                f"PortaSwitch returned no attachment for the voicemail message {message_id} "
+                f"but a {type(attachment).__name__} with the keys "
+                f"{sorted(attachment) if isinstance(attachment, dict) else 'n/a'}; "
+                f"reporting the message as not found"
+            )
+            raise not_found_voicemail_message_error(message_id)
+
+        return attachment
 
     async def patch_voicemail_message(
             self, session: SessionInfo, message_id: str, body: UserVoicemailMessagePatch
