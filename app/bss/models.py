@@ -233,6 +233,13 @@ class GetUserRecordingUnprocessableEntityErrorResponse(ErrorResponse):
     )
 
 
+class GetUserRecordingTranscriptionUnprocessableEntityErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`",
+    )
+
+
 class GetUserHistoryListNotFoundErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
@@ -292,6 +299,10 @@ class GetUserRecordingNotFoundErrorResponse(ErrorResponse):
     pass
 
 
+class GetUserRecordingTranscriptionNotFoundErrorResponse(ErrorResponse):
+    pass
+
+
 class Pagination(BaseModel):
     items_per_page: Optional[conint(ge=1)] = Field(
         None, description="Number of items presented per page.", json_schema_extra={"example": 100}
@@ -319,6 +330,13 @@ class ProvisionSessionAutoInternalServerErrorErrorResponse(ErrorResponse):
 
 
 class GetUserRecordingUnauthorizedErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `authorization_header_missing`\n- `bearer_credentials_missing`\n- `access_token_invalid`\n- `access_token_expired`\n- `unknown`",
+    )
+
+
+class GetUserRecordingTranscriptionUnauthorizedErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
         description="`code` field values that are defined (but can be expanded) are:\n- `authorization_header_missing`\n- `bearer_credentials_missing`\n- `access_token_invalid`\n- `access_token_expired`\n- `unknown`",
@@ -549,6 +567,13 @@ class CallRecordingId(RootModel[str]):
     """A unique identifier for a call recording, used to reference the recorded media of a specific call."""
 
 
+class TranscriptionFormat(Enum):
+    """The shape a call transcription is asked for in."""
+
+    json = "json"
+    text = "text"
+
+
 class CreateSessionUnprocessableEntityErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
@@ -557,6 +582,13 @@ class CreateSessionUnprocessableEntityErrorResponse(ErrorResponse):
 
 
 class GetUserRecordingInternalServerErrorErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `external_api_issue`",
+    )
+
+
+class GetUserRecordingTranscriptionInternalServerErrorErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
         description="`code` field values that are defined (but can be expanded) are:\n- `external_api_issue`",
@@ -597,6 +629,7 @@ class SupportedEnum(Enum):
     voicemail_save = "voicemailSave"
     voicemail_trash = "voicemailTrash"
     voicemail_forward = "voicemailForward"
+    transcription = "transcription"
 
 
 class SystemInfoShowResponse(BaseModel):
@@ -607,7 +640,7 @@ class SystemInfoShowResponse(BaseModel):
     name: str
     supported: List[SupportedEnum] = Field(
         ...,
-        description="A list of supported functionalities by the **Adaptee**.\n\nPossible functionalities values:\n* `signup` - supports the creation of new customer accounts\n* `otpSignin` - allows user authorization via One-Time Password (OTP)\n* `passwordSignin` - allows user authorization using login and password\n* `autoProvision` - allows user authorization using config token\n* `recordings` - provides access to call recordings\n* `callHistory` - provides access to call history\n* `extensions` - retrieves the list of other users (contacts)\n* `conference` - allows merging the calls on two or more lines into an audio conference\n* `conversationMute` - allows silencing new-message notifications of a single chat or SMS conversation\n* `voicemailSave` - allows keeping a voicemail message out of the new-message list\n* `voicemailTrash` - deleting a voicemail message moves it to a trash it can be restored from\n* `voicemailForward` - allows passing a voicemail message on to another user\n",
+        description="A list of supported functionalities by the **Adaptee**.\n\nPossible functionalities values:\n* `signup` - supports the creation of new customer accounts\n* `otpSignin` - allows user authorization via One-Time Password (OTP)\n* `passwordSignin` - allows user authorization using login and password\n* `autoProvision` - allows user authorization using config token\n* `recordings` - provides access to call recordings\n* `callHistory` - provides access to call history\n* `extensions` - retrieves the list of other users (contacts)\n* `conference` - allows merging the calls on two or more lines into an audio conference\n* `conversationMute` - allows silencing new-message notifications of a single chat or SMS conversation\n* `voicemailSave` - allows keeping a voicemail message out of the new-message list\n* `voicemailTrash` - deleting a voicemail message moves it to a trash it can be restored from\n* `voicemailForward` - allows passing a voicemail message on to another user\n* `transcription` - provides the speech-to-text transcription of a call recording\n",
     )
     version: str
 

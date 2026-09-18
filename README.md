@@ -87,6 +87,40 @@ it can be restored from, and is Core's own.
 behaviour; they are advertised here only so a client can tell a Core that speaks them
 from one that does not.
 
+Call recordings (WT-1963):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CAPABILITIES_RECORDINGS` | `false` | Downloading the recording of a call |
+| `CAPABILITIES_TRANSCRIPTION` | `false` | The speech-to-text transcript of that recording |
+
+`transcription` depends on `recordings`: the transcript is keyed by an id that only a
+call history row carrying a recording gives out, so switching recordings off drops it
+too. It is off by default because transcription is a PortaSwitch service feature the
+deployment subscribes to and is charged for — turning it on where it is not configured
+makes clients offer a control that answers 404.
+
+## Call recording transcription (PortaSwitch)
+
+`GET /user/recordings/{recording_id}/transcription` returns what PortaBilling's
+`CDR/get_transcription` produced, with its own content type and no wrapper: a JSON
+document, plain text (`?format=text`), or an archive when the call was recorded as
+several files. `?check_only=true` reports presence without the body, for polling a call
+that is recorded but not transcribed yet.
+
+`recording_id` is the value `GET /user/history` returned, the same one the recording
+download takes — but that value changed shape with this feature. PortaBilling keys the
+two halves differently: the audio by `i_xdr` (`CDR/get_call_recording`), the transcript
+by `call_recording_id`, which is the xDR's `h323_conf_id`. **No API method in any realm
+maps one to the other** — there is no xDR-by-id method and no `i_xdr` filter on any xDR
+list — and both keys are visible only while serving the call history. So `recording_id`
+now carries both, base64url-encoded because `h323_conf_id` contains spaces and Core
+interpolates the value into a URL path unescaped.
+
+An id a client stored before the upgrade is a bare number. It still downloads the
+audio; asking it for a transcript answers `404`, and re-reading the call history yields
+an id that works.
+
 ## Call history date range (PortaSwitch)
 
 `GET /user/history` takes optional `time_from` / `time_to` query parameters and forwards

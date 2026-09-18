@@ -131,6 +131,25 @@ means the documented template to copy does not honour either mechanism.
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 
+### `recording_id` carries two PortaBilling keys, not one
+
+PortaBilling keys the two halves of a recorded call differently and offers no bridge
+between them: the audio by `i_xdr` (`CDR/get_call_recording`, `i_xdr` required), the
+transcript by `call_recording_id` — the xDR's `h323_conf_id` — in
+`CDR/get_transcription`, which has no `i_xdr` variant in any realm, MR128 through
+MR131. There is no xDR-by-id method anywhere and no `i_xdr` filter on any xDR list, so
+given only an `i_xdr` the `call_recording_id` cannot be looked up. (FR-565's HLD did
+specify adding `i_xdr`; its post-implementation note says the API requirements were not
+implemented, because one xDR can still map to several recording files.)
+
+Both keys sit side by side in the `Account/get_xdr_list` row and nowhere else, so
+`Serializer.compose_recording_id` packs both into the `recording_id` the call history
+hands out — base64url, because `h323_conf_id` holds spaces and Core interpolates path
+params unescaped. `parse_recording_id` splits it back. A bare numeric id is one minted
+before WT-1963: it still downloads, and the transcript answers 404 rather than
+guessing. Do not "simplify" this back to `str(i_xdr)` — that silently removes the only
+path to a transcript.
+
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 
 PortaBilling exposes exactly five mailbox calls (`api/account.py`):

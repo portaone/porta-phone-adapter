@@ -5,7 +5,7 @@ import time
 import uuid
 from inspect import isawaitable
 from datetime import datetime, timedelta, UTC
-from typing import AsyncIterator, Awaitable, Callable, Final, Optional, Dict, List
+from typing import AsyncIterator, Awaitable, Callable, Final, Optional, Dict, List, Union
 
 import urllib3
 from jose.exceptions import ExpiredSignatureError, JWTError
@@ -53,6 +53,8 @@ from .exceptions import (
     not_found_otp_code_error,
     not_found_contact_error,
     not_found_recording_error,
+    not_found_transcription_error,
+    invalid_recording_id_error,
     incorrect_credentials_error,
     user_authentication_error,
     delivery_channel_unspecified_error,
@@ -258,6 +260,9 @@ class PortaSwitchAdapter(BSSAdapter):
         # only tell the client whether the deployment offers them (WT-1878).
         Capabilities.voicemail_trash,
         Capabilities.voicemail_forward,
+        # Speech-to-text of a call recording. A PortaSwitch service feature the
+        # deployment pays for, so it is off unless switched on (WT-1963).
+        Capabilities.transcription,
     ]
     # Which mailbox flag backs each patchable voicemail attribute (WT-1878).
     VOICEMAIL_PATCH_FLAGS: Final[dict[str, PortaSwitchMailboxMessageFlag]] = {
@@ -1600,9 +1605,16 @@ class PortaSwitchAdapter(BSSAdapter):
             WebTritErrorException: If the recording is not found or the ID is invalid.
         """
         recording_id = safely_extract_scalar_value(call_recording)
+        # The id carries both billing keys since WT-1963; the download needs the i_xdr
+        # half of it. An id minted before that is the bare i_xdr and passes through.
+        try:
+            i_xdr, _ = Serializer.parse_recording_id(recording_id)
+        except ValueError:
+            raise invalid_recording_id_error(recording_id)
+
         try:
             return await self._account_api.get_call_recording(
-                access_token=safely_extract_scalar_value(session.access_token), recording_id=recording_id
+                access_token=safely_extract_scalar_value(session.access_token), recording_id=i_xdr
             )
 
         except WebTritErrorException as error:
@@ -1611,6 +1623,68 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise access_token_expired_error()
             if fault_code in ("Server.CDR.xdr_not_found", "Server.CDR.invalid_call_recording_id",):
                 raise not_found_recording_error(recording_id)
+
+            raise error
+
+    async def retrieve_call_transcription(
+        self,
+        session: SessionInfo,
+        call_recording: CallRecordingId,
+        format: Optional[str] = None,
+        check_only: bool = False,
+    ) -> Union[dict, tuple[str, AsyncIterator]]:
+        """Returns the transcription of a recorded call.
+
+        Parameters:
+            session (SessionInfo): The session of the PortaSwitch account.
+            call_recording (CallRecordingId): The identifier of the call recording,
+                as GET /user/history handed it out.
+            format (Optional[str]): "json" for the structured transcription,
+                "text" for the transcribed text only.
+            check_only (bool): Only report whether a transcription exists.
+
+        Returns:
+            dict|tuple[str, AsyncIterator]: PortaBilling's answer as it came - the
+                parsed JSON, or (content-type, iterator over the raw bytes).
+
+        Raises:
+            WebTritErrorException: If the id is not one this adapter minted, carries
+                no transcription key, or names a recording PortaBilling cannot find.
+        """
+        recording_id = safely_extract_scalar_value(call_recording)
+        try:
+            _, call_recording_id = Serializer.parse_recording_id(recording_id)
+        except ValueError:
+            raise invalid_recording_id_error(recording_id)
+
+        # An id minted before WT-1963 carries the i_xdr alone, and no PortaBilling
+        # method turns that into a call_recording_id. Re-reading the call history
+        # yields an id that has one.
+        if not call_recording_id:
+            raise not_found_transcription_error(recording_id)
+
+        try:
+            return await self._account_api.get_call_transcription(
+                call_recording_id=call_recording_id,
+                access_token=safely_extract_scalar_value(session.access_token),
+                format=format,
+                check_only=check_only,
+            )
+
+        except WebTritErrorException as error:
+            fault_code = extract_fault_code(error)
+            if fault_code in ("Client.Session.check_auth.failed_to_process_access_token",):
+                raise access_token_expired_error()
+            # The two faults get_call_recording answers with, plus the one this method
+            # has of its own: a call that is recorded but not transcribed - because the
+            # service was off when it happened, or because the transcript is still
+            # being produced - is a 404, not a server error.
+            if fault_code in (
+                "Server.CDR.xdr_not_found",
+                "Server.CDR.invalid_call_recording_id",
+                "Server.CDR.transcription_not_found",
+            ):
+                raise not_found_transcription_error(recording_id)
 
             raise error
 

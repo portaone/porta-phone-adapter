@@ -1,3 +1,5 @@
+import base64
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,6 +34,10 @@ BILLING_MODEL_MAP: dict = {
     2: BalanceType.unknown,  # alias
     4: BalanceType.unknown,  # beneficiary
 }
+
+#: str: Joins the two PortaBilling keys inside a WebTrit recording_id (WT-1963).
+#: Not a character `h323_conf_id` (hex quads and spaces) or a number can contain.
+RECORDING_ID_SEPARATOR: str = "|"
 
 
 class Serializer:
@@ -379,7 +385,9 @@ class Serializer:
                 int(cdr_info["unix_disconnect_time"]), timezone.utc
             ),
             duration=cdr_info["charged_quantity"],
-            recording_id=str(cdr_info["i_xdr"]) if Serializer._call_recording_exist(cdr_info) else None,
+            recording_id=(
+                Serializer.compose_recording_id(cdr_info) if Serializer._call_recording_exist(cdr_info) else None
+            ),
             status=Serializer.parse_call_status(cdr_info)
         )
 
@@ -492,3 +500,55 @@ class Serializer:
         used to carry this is not set anymore since MR129 (IUN-1014, WT-1939).
         """
         return bool(cdr.get("cr_download_ids"))
+
+    @staticmethod
+    def compose_recording_id(cdr_info: dict) -> str:
+        """Mints the recording_id WebTrit hands out for a recorded call (WT-1963).
+
+        PortaBilling keys the two halves of a recording differently: the audio by
+        `i_xdr` (`CDR/get_call_recording`), the transcript by `call_recording_id` -
+        the xDR's `h323_conf_id` - and no API method maps one to the other. Both are
+        in the xDR row right here, and nowhere else, so the id carries both.
+
+        Base64url, because `h323_conf_id` holds spaces and WebTrit Core interpolates
+        this value into a URL path unescaped. A row without `h323_conf_id` falls back
+        to the bare `i_xdr`, which is what every id looked like before this change and
+        is still accepted for the download.
+        """
+        i_xdr = str(cdr_info["i_xdr"])
+        conf_id = cdr_info.get("h323_conf_id")
+        if not conf_id:
+            # Every recorded call should have one. If the billing ever stops returning
+            # it by default, transcription answers 404 for everything, and this line is
+            # what says why - the fallback itself is silent.
+            logging.warning(f"xDR {i_xdr} has a call recording but no h323_conf_id; its transcription is unreachable")
+            return i_xdr
+
+        token = f"{i_xdr}{RECORDING_ID_SEPARATOR}{conf_id}".encode()
+        return base64.urlsafe_b64encode(token).decode().rstrip("=")
+
+    @staticmethod
+    def parse_recording_id(recording_id: str) -> tuple[str, Optional[str]]:
+        """Splits a recording_id back into (i_xdr, call_recording_id).
+
+        A bare number is an id minted before WT-1963 (or for an xDR with no
+        `h323_conf_id`): the download still works, the transcript is not reachable,
+        and the caller gets a 404 telling it to re-read the call history.
+
+        Raises:
+            ValueError: the id is neither a number nor a token this adapter minted.
+        """
+        if recording_id.isascii() and recording_id.isdigit():
+            return recording_id, None
+
+        padding = "=" * (-len(recording_id) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(recording_id + padding).decode()
+        except Exception:
+            raise ValueError(f"Malformed recording_id: {recording_id}")
+
+        i_xdr, separator, conf_id = decoded.partition(RECORDING_ID_SEPARATOR)
+        if not separator or not (i_xdr.isascii() and i_xdr.isdigit()) or not conf_id:
+            raise ValueError(f"Malformed recording_id: {recording_id}")
+
+        return i_xdr, conf_id
