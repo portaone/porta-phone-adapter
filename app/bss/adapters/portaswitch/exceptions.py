@@ -43,6 +43,12 @@ def not_found_call_queue_error(queue_id: str):
     )
 
 
+def not_found_voicemail_message_error(message_id: str):
+    return WebTritErrorException(
+        404, f"There is no a voicemail message with such id: {message_id}", "message_not_found"
+    )
+
+
 def external_api_issue_error():
     return WebTritErrorException(500, "Unknown error", "external_api_issue")
 
