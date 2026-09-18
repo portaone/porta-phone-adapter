@@ -179,6 +179,25 @@ The same mailbox is real e-mail: a flag set here is visible in the subscriber's 
 webmail and any IMAP client, which is why repurposing `Answered` to mean anything else
 would corrupt what they see.
 
+### A vanished `message_uid` is not reported as missing
+
+A message deleted straight on PortaSwitch - over the IVR, from the UM webmail, from
+another device - leaves every client's list stale, and PortaBilling does not answer
+"not found" for the id that list still shows. `get_mailbox_message_details` returns
+**200 describing a different message of the same mailbox**, stripped of `subject`,
+`from`, `to` and `voicemail_duration`; `get_mailbox_message_attachment` returns a JSON
+body instead of the media file, which `decode_response` hands back as a dict (WT-1992).
+
+So both read paths verify what came back before using it - the details record against
+the requested `message_uid` *and* for the presence of `from`/`to`, the attachment for
+being a `(content_type, iterator)` pair - and report a mismatch as
+`404 message_not_found`. The id half is the load-bearing one: the stripped record
+happens to raise `KeyError: 'from'`, but everything `get_voicemail_message` needs is
+present, so a *complete* foreign record would be served as a 200 under the requested
+id. Do not replace the check with a tolerant `.get("from")` - `sender`/`receiver` are
+required by `VoicemailMessageDetails`, so that only moves the failure into pydantic
+and, worse, hides the wrong-message answer.
+
 ## Documentation rules
 
 When adding a config option, a route, a capability or any user-facing behaviour:
