@@ -47,14 +47,25 @@ class PortaSwitchSettings(BaseSettings):
     API_TIMEOUT: Optional[float] = 25
     # httpx connection-pool limits for the async client (WT-1720). This pool — not
     # the old ~40 Starlette thread-pool tokens — is now the real per-pod ceiling on
-    # concurrent requests toward the switch. Defaults match httpx's own (100/20):
-    # an order of magnitude above the former thread cap, while staying polite to the
-    # switch. Raise MAX_CONNECTIONS for a large switch / high Cloud Run concurrency;
-    # lower it to protect a small or shared one. Keep MAX_KEEPALIVE_CONNECTIONS
-    # <= MAX_CONNECTIONS. Configurable via PORTASWITCH_MAX_CONNECTIONS /
+    # concurrent requests toward the switch. Raise MAX_CONNECTIONS for a large switch
+    # / high Cloud Run concurrency; lower it to protect a small or shared one.
+    # Configurable via PORTASWITCH_MAX_CONNECTIONS /
     # PORTASWITCH_MAX_KEEPALIVE_CONNECTIONS.
+    #
+    # MAX_KEEPALIVE_CONNECTIONS unset means "as many as the pool holds" (WT-1973).
+    # httpx's own default of 20 is meant for a client talking to many hosts; this
+    # one talks only to PortaSwitch, so a keep-alive budget below the pool size buys
+    # nothing and costs a TLS handshake per call. Worse, httpcore charges *active*
+    # connections against that budget — its cleanup pass, which runs on every
+    # response close, closes an idle connection whenever the pool's *total* count
+    # exceeds max_keepalive_connections — so with a pool of 100 and a budget of 20
+    # every connection was closed as soon as it answered, once more than 20 were
+    # open at all. Leaving this None makes the budget follow MAX_CONNECTIONS: httpx
+    # maps None to sys.maxsize and httpcore mins it with max_connections, and since
+    # the pool never holds more than max_connections the surplus-idle branch becomes
+    # unreachable. Set an explicit value only to cap idle sockets deliberately.
     MAX_CONNECTIONS: int = 100
-    MAX_KEEPALIVE_CONNECTIONS: int = 20
+    MAX_KEEPALIVE_CONNECTIONS: Optional[int] = None
     # Disaster-recovery failover for a geographically dispersed installation
     # (WT-1654). When a standby URL is unset, failover is disabled and behavior
     # is unchanged. On a main-site outage, API traffic fails over to the standby;
@@ -113,7 +124,7 @@ class PortaSwitchSettings(BaseSettings):
         return v if v > 0 else None
 
     @staticmethod
-    def _positive_int_or(v: Union[str, int, None], default: int) -> int:
+    def _positive_int_or(v: Union[str, int, None], default: Optional[int]) -> Optional[int]:
         # Treat blank/invalid/non-positive as "unset" so a stray empty env var
         # (e.g. PORTASWITCH_MAX_CONNECTIONS="") falls back to the safe default.
         if v is None or (isinstance(v, str) and not v.strip()):
@@ -165,8 +176,10 @@ class PortaSwitchSettings(BaseSettings):
 
     @field_validator("MAX_KEEPALIVE_CONNECTIONS", mode='before')
     @classmethod
-    def decode_max_keepalive_connections(cls, v: Union[str, int, None]) -> int:
-        return cls._positive_int_or(v, 20)
+    def decode_max_keepalive_connections(cls, v: Union[str, int, None]) -> Optional[int]:
+        # None — not a number — is the "unset" value here, because that is what
+        # httpx reads as "keep as many as the pool holds"; see the field comment.
+        return cls._positive_int_or(v, None)
 
     @field_validator("CONTACTS_SELECTING_EXTENSION_TYPES", mode='before')
     @classmethod

@@ -100,6 +100,35 @@ too. It is off by default because transcription is a PortaSwitch service feature
 deployment subscribes to and is charged for — turning it on where it is not configured
 makes clients offer a control that answers 404.
 
+## Outbound connection pool (PortaSwitch)
+
+Every PortaSwitch call goes through one process-wide `httpx.AsyncClient` per TLS-verify
+setting, shared by the admin and the account realm. Its pool is the real per-pod ceiling
+on concurrent requests toward the switch.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORTASWITCH_MAX_CONNECTIONS` | `100` | How many connections to the switch a pod may hold at once. Raise it for a large or dedicated switch and high per-instance concurrency; lower it to protect a small or shared one. Requests in flight are capped just below this, so a checkout never has to queue |
+| `PORTASWITCH_MAX_KEEPALIVE_CONNECTIONS` | unset — as many as the pool holds | How many of those connections may sit idle waiting to be reused. Set it only to cap idle sockets deliberately; a blank or non-positive value means unset |
+
+**Leave the keep-alive limit unset unless you have a reason not to** (WT-1973). The
+adapter talks to a single switch, so a connection it closes after a response is a TCP+TLS
+handshake it pays again on the next call. httpx's own default of 20 is meant for a client
+spread over many hosts, and it behaves worse than it reads: the underlying pool charges
+*busy* connections against the keep-alive budget, closing an idle connection whenever the
+pool's **total** count exceeds the limit. With a pool of 100 and a limit of 20, every
+connection was therefore closed the moment it answered, as soon as more than 20 were open
+at all — and one `/user/contacts` request against a large hierarchy opens ten at a time.
+At the reporting installation that reached ~120 new connections per second to a single
+IP:port, which exhausted the egress NAT's source ports and started failing calls to
+PortaBilling.
+
+Leaving it unset does not raise peak concurrency — that is `PORTASWITCH_MAX_CONNECTIONS`
+— it only lets a connection be reused instead of reopened. Steady-state port usage drops,
+because each closed connection otherwise holds a source port in `TIME_WAIT` for a minute
+afterwards. The trade-off is that the switch sees up to `PORTASWITCH_MAX_CONNECTIONS`
+idle sockets per pod; a connection idle for more than five seconds is never reused anyway.
+
 ## Call recording transcription (PortaSwitch)
 
 `GET /user/recordings/{recording_id}/transcription` returns what PortaBilling's
