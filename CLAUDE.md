@@ -113,6 +113,14 @@ means the documented template to copy does not honour either mechanism.
   (WT-1720). In-flight non-streamed requests are capped strictly below the connection-pool
   size, because a request cancelled while queued for a full pool permanently loses that
   pool slot (WT-1922). Streamed downloads hand their permit back once headers arrive.
+  `MAX_KEEPALIVE_CONNECTIONS` is deliberately unset (WT-1973), which httpx reads as
+  "as many as the pool holds": httpcore charges *active* connections against the
+  keep-alive budget — its cleanup pass, run on every response close, drops an idle
+  connection whenever the pool's **total** count exceeds that budget — so httpx's own
+  default of 20 against a pool of 100 closed every connection the moment it answered,
+  once more than 20 were open. One switch, one pool: a budget below the pool size buys
+  nothing and costs a handshake per call. `keepalive_expiry` stays at httpx's 5 s and
+  is not exposed, so a burst still reconnects after a lull; that is the known residual.
 - **`failover.py`** — disaster-recovery site switching. Detecting that the main site is
   down is reactive (timeouts), while switching *back* is authoritative
   (`operating_mode` from `generic.get_session_data`). It also owns the PortaBilling
