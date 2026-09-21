@@ -438,10 +438,18 @@ class PortaSwitchAdapter(BSSAdapter):
             if not account_info:
                 raise not_found_user_error(user.user_id)
 
+            # If the provided identifier refers to an alias, resolve to the master account,
+            # as authenticate does: add-ons are assigned to the master, and the OTP has to
+            # be created for it as well (WT-1926).
+            if master_id := account_info.get("i_master_account"):
+                account_info = (await self._admin_api.get_account_info(i_account=master_id)).get("account_info")
+                if not account_info:
+                    raise not_found_user_error(user.user_id)
+
             if self._portaswitch_settings.ALLOWED_ADDONS:
                 self._check_allowed_addons(account_info)
 
-            i_account = account_info.get("i_master_account", account_info["i_account"])
+            i_account = account_info["i_account"]
             success: int = (await self._admin_api.create_otp(i_account, self.OTP_DELIVERY_CHANNEL))["success"]
             if not success:
                 raise external_api_issue_error()
@@ -2348,16 +2356,14 @@ class PortaSwitchAdapter(BSSAdapter):
         """Verify that the account has at least one of the required add-ons.
 
         Parameters:
-            account_info (dict): Account information including an assigned_addons list.
+            account_info (dict): Account information of the MASTER account, including an
+                assigned_addons list. An alias carries no add-ons of its own, so callers
+                resolve i_master_account first (WT-1926).
 
         Raises:
             WebTritErrorException: If the account doesn't have any of the required add-ons.
         """
         allowed_addons = set(self._portaswitch_settings.ALLOWED_ADDONS)
-
-        if account_info.get("i_master_account"):
-            logging.debug("Account is alias, skipping add-on check...")
-            return
 
         assigned_addons = account_info.get("assigned_addons", [])
         assigned_addon_names = {addon.get("name") for addon in assigned_addons if "name" in addon}
