@@ -119,6 +119,14 @@ class AccountAPI(AsyncHTTPAPIConnector):
         if "attachment" in response.headers.get("Content-Disposition", ""):
             return content_type, self._aiter_and_close(response)
 
+        # A transcription asked for as plain text is a document, not an attachment,
+        # and PortaBilling does not always mark it as one (WT-1963). Scoped to that one
+        # method: for every other call a text/* body is something gone wrong - an error
+        # page from something in between - and must stay the error below, not become a
+        # 200 carrying that page as if it were the recording.
+        if content_type.startswith("text/") and response.request.url.path.endswith("/CDR/get_transcription"):
+            return content_type, self._aiter_and_close(response)
+
         # Unexpected shape: nothing will read the body, so release the
         # connection explicitly (matters for streamed responses).
         await response.aclose()
@@ -371,6 +379,49 @@ class AccountAPI(AsyncHTTPAPIConnector):
             params={
                 "i_xdr": recording_id,
             },
+            stream=True,
+            access_token=access_token,
+        )
+
+    async def get_call_transcription(
+        self,
+        call_recording_id: str,
+        access_token: str,
+        format: Optional[str] = None,
+        check_only: bool = False,
+    ) -> Union[dict, tuple[str, AsyncIterator[bytes]]]:
+        """Returns the transcription of a recorded call.
+
+        Unlike get_call_recording, this method is keyed by the call recording record
+        (the xDR's h323_conf_id), not by i_xdr - PortaBilling has no i_xdr variant of
+        it in any realm (WT-1963).
+
+        Parameters:
+            :call_recording_id (str): The identifier of the call recording record.
+            :access_token (str): The token that enables the API user to be authenticated
+                in the PortaBilling API using the account realm.
+            :format (Optional[str]): "json" for the structured transcription with
+                timestamps, "text" for the transcribed text only. PortaBilling defaults
+                to "json".
+            :check_only (bool): Only report whether a transcription exists, without
+                returning it.
+
+        Returns:
+            :(dict|tuple): The parsed JSON transcription, or (content_type, async byte
+                iterator) when PortaBilling answers with a file (plain text, or a ZIP
+                when the call was recorded as several files).
+
+        """
+        params = {"call_recording_id": call_recording_id}
+        if format:
+            params["format"] = format
+        if check_only:
+            params["check_only"] = 1
+
+        return await self.__send_request(
+            module="CDR",
+            method="get_transcription",
+            params=params,
             stream=True,
             access_token=access_token,
         )

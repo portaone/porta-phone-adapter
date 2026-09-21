@@ -1,7 +1,11 @@
+import base64
 import sys
 import os
 import types
 import importlib.util
+from urllib.parse import quote
+
+import pytest
 
 _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
@@ -36,6 +40,7 @@ def _make_cdr(**overrides) -> dict:
     cdr = {
         "i_xdr": 129580143,
         "call_id": "b2YBUVAUT27eW4QmAd2yBSqG",
+        "h323_conf_id": "062BDBD0 7366C3AD 6ED2EA7A 66D2F473",
         "CLI": "7774",
         "CLD": "7773",
         "unix_connect_time": 1757260800,
@@ -72,9 +77,25 @@ class TestCallRecordingExist:
 
 
 class TestGetCdrInfoRecordingId:
-    def test_recording_id_is_the_xdr_id_when_a_recording_exists(self):
-        cdr = _make_cdr(cr_download_ids=["E0C5281F_E5B8480E_1D3207FE_019AFB34"])
-        # The recording is still downloaded by i_xdr - cr_download_ids only tells it exists.
+    def test_recording_id_carries_both_billing_keys(self):
+        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        # The audio is downloaded by i_xdr, the transcript by h323_conf_id, and nothing
+        # in the PortaBilling API maps one to the other (WT-1963).
+        recording_id = Serializer.get_cdr_info(cdr).recording_id.root
+        assert Serializer.parse_recording_id(recording_id) == (
+            "129580143", "062BDBD0 7366C3AD 6ED2EA7A 66D2F473"
+        )
+
+    def test_recording_id_is_url_safe(self):
+        # Core interpolates this value into a URL path without escaping it, and
+        # h323_conf_id contains spaces.
+        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        recording_id = Serializer.get_cdr_info(cdr).recording_id.root
+        assert quote(recording_id, safe="") == recording_id
+
+    def test_recording_id_falls_back_to_the_xdr_id_without_a_conf_id(self):
+        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        del cdr["h323_conf_id"]
         assert Serializer.get_cdr_info(cdr).recording_id.root == "129580143"
 
     def test_recording_id_is_none_without_a_recording(self):
@@ -83,3 +104,26 @@ class TestGetCdrInfoRecordingId:
     def test_recording_id_is_none_for_a_stale_bit_flag(self):
         cdr = _make_cdr(bit_flags=4 | 64)
         assert Serializer.get_cdr_info(cdr).recording_id is None
+
+
+class TestParseRecordingId:
+    def test_round_trip(self):
+        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        assert Serializer.parse_recording_id(Serializer.compose_recording_id(cdr)) == (
+            "129580143", "062BDBD0 7366C3AD 6ED2EA7A 66D2F473"
+        )
+
+    def test_a_bare_number_is_a_pre_wt_1963_id(self):
+        # It still downloads the audio; there is no key to ask for a transcript with.
+        assert Serializer.parse_recording_id("129580143") == ("129580143", None)
+
+    @pytest.mark.parametrize("recording_id", [
+        "not base64 at all!",
+        base64.urlsafe_b64encode(b"129580143").decode().rstrip("="),        # no separator
+        base64.urlsafe_b64encode(b"129580143|").decode().rstrip("="),       # empty conf id
+        base64.urlsafe_b64encode(b"|062BDBD0").decode().rstrip("="),        # no i_xdr
+        base64.urlsafe_b64encode(b"abc|062BDBD0").decode().rstrip("="),     # i_xdr not a number
+    ])
+    def test_malformed_ids_are_rejected(self, recording_id):
+        with pytest.raises(ValueError):
+            Serializer.parse_recording_id(recording_id)

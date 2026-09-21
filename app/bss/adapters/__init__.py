@@ -139,6 +139,7 @@ class BSSAdapter(SessionManagement, OTPHandler,
         AUTO_PROVISION=dict(default=False, option=Capabilities.autoProvision),
         CDRS=dict(default=False, option=Capabilities.callHistory),
         RECORDINGS=dict(default=False, option=Capabilities.recordings),
+        TRANSCRIPTION=dict(default=False, option=Capabilities.transcription),
         EXTENSIONS=dict(default=True, option=Capabilities.extensions),
         VOICEMAIL=dict(default=False, option=Capabilities.voicemail),
         CUSTOM_METHODS=dict(default=False, option=Capabilities.customMethods),
@@ -162,6 +163,10 @@ class BSSAdapter(SessionManagement, OTPHandler,
         Capabilities.voicemail_save: Capabilities.voicemail,
         Capabilities.voicemail_trash: Capabilities.voicemail,
         Capabilities.voicemail_forward: Capabilities.voicemail,
+        # A transcript is a property of a call recording, and its id comes from the
+        # same call history row - with recordings off there is nothing to ask about
+        # (WT-1963).
+        Capabilities.transcription: Capabilities.recordings,
     }
     # what our adapter can do in general (what is coded)
     # should be overridden in the sub-class
@@ -338,6 +343,15 @@ class BSSAdapter(SessionManagement, OTPHandler,
             self, session: SessionInfo, recording_id: str
     ) -> tuple[str, Iterator]:
         """Get the media file for a previously recorded call."""
+        raise NotImplementedError("Override this method in your sub-class")
+
+    # Not abstract: an adapter that does not list the `transcription` capability can
+    # never have this called, so there is nothing for it to override (WT-1963).
+    def retrieve_call_transcription(
+            self, session: SessionInfo, recording_id: str,
+            format: Optional[str] = None, check_only: bool = False
+    ):
+        """Get the speech-to-text transcription of a previously recorded call."""
         raise NotImplementedError("Override this method in your sub-class")
 
     @abstractmethod
