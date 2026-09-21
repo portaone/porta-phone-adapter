@@ -160,3 +160,22 @@ default made the switch process every partition to return 40 rows — twice, bec
 Note that `from_date` / `to_date` filter on `bill_time` while the response reports
 `connect_time`, so calls right at a window edge can fall on the other side of it than the
 displayed timestamp suggests.
+
+## Add-on restricted sign-in (PortaSwitch)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORTASWITCH_ALLOWED_ADDONS` | empty — no restriction | Names of PortaBilling add-on products, any one of which lets an account sign in. Several are separated by `;` |
+
+While the list is empty the gate is off. Once it is set, both sign-in methods —
+login/password and OTP — read the account's `assigned_addons` and answer
+`403 addon_required` unless at least one allowed add-on is assigned.
+
+Add-ons are assigned to the **master** account: an alias row carries none of its own, and
+`Account/get_account_info(id=<alias>)` answers with that alias row, not the master's. Both
+paths therefore resolve `i_master_account` first and check the master's add-ons, so signing
+in with an alias number is allowed exactly when signing in with the master's own id would
+be (WT-1926).
+
+The gate is a sign-in check only — an established session outlives the removal of the
+add-on until its token expires.

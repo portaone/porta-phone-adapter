@@ -128,6 +128,14 @@ means the documented template to copy does not honour either mechanism.
   `access_token_expired`, which is the deliberate trade-off of mapping centrally. Carrying
   the session across sites is a platform gap (BA-47630 / BA-47622), not something the
   adapter can close.
+- **Add-ons gate sign-in, and only the master account has them.** With
+  `PORTASWITCH_ALLOWED_ADDONS` set, `_check_allowed_addons` refuses an account whose
+  `assigned_addons` holds none of the configured names. An *alias* row carries no add-ons
+  of its own and `Account/get_account_info(id=<alias>)` answers with that row, so both
+  `authenticate` and `generate_otp` resolve `i_master_account` to the master account
+  *before* the check. Skipping the check for a row that has `i_master_account` — which the
+  adapter did between January and September 2026 — is what let every OTP sign-in by alias
+  through the gate (WT-1926). Resolve, never skip.
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 
