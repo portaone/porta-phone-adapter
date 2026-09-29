@@ -296,6 +296,11 @@ class PortaSwitchAdapter(BSSAdapter):
                 recheck_interval=self._portaswitch_settings.SITE_RECHECK_INTERVAL,
                 switch_back_threshold=self._portaswitch_settings.SITE_SWITCH_BACK_THRESHOLD,
             )
+            if self._portaswitch_settings.VERIFY_HTTPS_STANDBY is False:
+                logging.warning(
+                    "PortaSwitch DR: HTTPS certificate verification is disabled for the standby site; "
+                    "give it a domain name with a valid certificate and re-enable it."
+                )
         elif admin_standby or account_standby:
             logging.warning(
                 "PortaSwitch DR: only one of ADMIN_API_URL_STANDBY / ACCOUNT_API_URL_STANDBY "
