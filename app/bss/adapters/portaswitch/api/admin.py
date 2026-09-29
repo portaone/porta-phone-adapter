@@ -37,6 +37,7 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
         # TLS verification is applied at shared-client construction (httpx
         # verify is client-level, not per-request); see AsyncHTTPAPIConnector.
         self._verify_https = portaswitch_settings.VERIFY_HTTPS
+        self._verify_https_standby = portaswitch_settings.VERIFY_HTTPS_STANDBY
         if portaswitch_settings.API_TIMEOUT is not None:
             self.DEFAULT_REQUEST_TIMEOUT = portaswitch_settings.API_TIMEOUT
         # httpx connection-pool limits for the shared async client (WT-1720).

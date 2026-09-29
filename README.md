@@ -129,6 +129,24 @@ because each closed connection otherwise holds a source port in `TIME_WAIT` for 
 afterwards. The trade-off is that the switch sees up to `PORTASWITCH_MAX_CONNECTIONS`
 idle sockets per pod; a connection idle for more than five seconds is never reused anyway.
 
+## Standby site certificate verification (PortaSwitch)
+
+With disaster-recovery failover configured (`PORTASWITCH_ADMIN_API_URL_STANDBY` and
+`PORTASWITCH_ACCOUNT_API_URL_STANDBY`), the standby site's HTTPS certificate is checked
+on its own switch.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORTASWITCH_VERIFY_HTTPS_STANDBY` | unset — follows `PORTASWITCH_VERIFY_HTTPS` | Whether to verify the standby site's HTTPS certificate |
+
+A standby is usually reached by IP while its certificate names the main site's domain,
+so it fails a check the main site passes. Setting this to `false` lets failover work
+without turning verification off for the main site too — but the admin credentials and
+subscribers' tokens then go to a site whose identity is not checked. The proper fix is a
+domain name for the standby that resolves to it and is covered by its certificate (a
+wildcard certificate for the main domain often already covers one); use that in the
+standby URLs and leave verification on.
+
 ## Call recording transcription (PortaSwitch)
 
 `GET /user/recordings/{recording_id}/transcription` returns what PortaBilling's

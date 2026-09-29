@@ -136,6 +136,12 @@ means the documented template to copy does not honour either mechanism.
   `access_token_expired`, which is the deliberate trade-off of mapping centrally. Carrying
   the session across sites is a platform gap (BA-47630 / BA-47622), not something the
   adapter can close.
+  TLS verification is per site (WT-2035): `VERIFY_HTTPS_STANDBY` unset follows
+  `VERIFY_HTTPS`, so `_send_rest_request` fetches the shared client **per target**
+  (`_verify_for`) — the standby may run on the other verify key's pool, so a pod can
+  hold two pools. The admission permit is still the main key's; that bounds the
+  standby's pool too only because no connector in the process has the standby's verify
+  value as its *main* one (admin and account share settings). Keep it that way.
 - **Add-ons gate sign-in, and only the master account has them.** With
   `PORTASWITCH_ALLOWED_ADDONS` set, `_check_allowed_addons` refuses an account whose
   `assigned_addons` holds none of the configured names. An *alias* row carries no add-ons

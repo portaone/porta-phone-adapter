@@ -181,6 +181,18 @@ class AsyncHTTPAPIConnector(ABC):
         # is fetched lazily per request, so the final value is always used.
         return getattr(self, "_verify_https", True)
 
+    def _verify_for(self, base_server: str) -> bool:
+        """TLS verification for one request target (WT-2035).
+
+        The standby site may be checked differently from the main one: it is
+        usually reached by IP, and its certificate names the main site's domain.
+        ``_verify_https_standby`` unset (None) follows the main setting.
+        """
+        standby = getattr(self, "_verify_https_standby", None)
+        if standby is not None and self._standby_server and base_server == self._standby_server:
+            return standby
+        return self._verify()
+
     def _request_timeout(self) -> httpx.Timeout:
         return build_httpx_timeout(self.DEFAULT_REQUEST_TIMEOUT)
 
@@ -193,8 +205,9 @@ class AsyncHTTPAPIConnector(ABC):
             return None
         return httpx.Limits(max_connections=mc, max_keepalive_connections=mk)
 
-    async def _client(self) -> httpx.AsyncClient:
-        return await get_shared_async_client(self._verify(), self._limits())
+    async def _client(self, base_server: Optional[str] = None) -> httpx.AsyncClient:
+        verify = self._verify() if base_server is None else self._verify_for(base_server)
+        return await get_shared_async_client(verify, self._limits())
 
     def add_auth_info(self, url: str, request_params: dict,
                       auth_session: AuthSessionData) -> dict:
@@ -276,12 +289,15 @@ class AsyncHTTPAPIConnector(ABC):
         """
         # Note: no 'verify' and no 'stream' key here — verify is client-level in
         # httpx, and streaming is handled via client.send(stream=True) below.
-        client = await self._client()
         timeout = self._request_timeout()
 
         targets = self._request_targets(server)
         last = len(targets) - 1
         for index, base_server in enumerate(targets):
+            # Picked per target: the standby may use the other verify client
+            # (WT-2035). The admission permit taken in send_rest_request still
+            # bounds it, since only one target is in flight at a time.
+            client = await self._client(base_server)
             url = base_server + path
             params = {
                 'headers': headers.copy() if headers else None,

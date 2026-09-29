@@ -72,6 +72,11 @@ class PortaSwitchSettings(BaseSettings):
     # switch-back uses the operating_mode signal (BA-47641).
     ADMIN_API_URL_STANDBY: Optional[str] = None
     ACCOUNT_API_URL_STANDBY: Optional[str] = None
+    # TLS verification for the standby site only (WT-2035). A standby is usually
+    # reached by IP while its certificate names the main site's domain, so it fails
+    # verification that the main site passes. Unset follows VERIFY_HTTPS, which
+    # keeps an upgrade from changing what either site is checked against.
+    VERIFY_HTTPS_STANDBY: Optional[bool] = None
     # Seconds between out-of-band main-site probes while running on standby.
     SITE_RECHECK_INTERVAL: int = 60
     # Consecutive main-site 'normal' probes required to switch back (hysteresis).
@@ -134,6 +139,15 @@ class PortaSwitchSettings(BaseSettings):
         except (TypeError, ValueError):
             return default
         return iv if iv > 0 else default
+
+    @field_validator("VERIFY_HTTPS_STANDBY", mode='before')
+    @classmethod
+    def decode_verify_https_standby(cls, v: Union[str, bool, None]) -> Optional[bool]:
+        # The chart renders an unset value as "", which must mean "follow
+        # VERIFY_HTTPS" rather than fail validation.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
 
     @field_validator("CONTACTS_CACHE_TTL", mode='before')
     @classmethod
