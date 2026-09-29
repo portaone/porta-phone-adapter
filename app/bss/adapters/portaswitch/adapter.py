@@ -220,7 +220,7 @@ class PortaSwitchAdapter(BSSAdapter):
     capabilities required by WebTrit clients.
     """
 
-    VERSION: Final[str] = "1.2.0"
+    VERSION: Final[str] = "1.3.0"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
     OTP_LOGIN_IDENTIFIERS = ('phone_number',)
     CAPABILITIES: Final[Capabilities] = [
