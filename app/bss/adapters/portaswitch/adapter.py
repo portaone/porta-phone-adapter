@@ -54,6 +54,7 @@ from .exceptions import (
     not_found_contact_error,
     not_found_recording_error,
     not_found_transcription_error,
+    forbidden_recording_error,
     invalid_recording_id_error,
     incorrect_credentials_error,
     user_authentication_error,
@@ -1637,6 +1638,10 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise access_token_expired_error()
             if fault_code in ("Server.CDR.xdr_not_found", "Server.CDR.invalid_call_recording_id",):
                 raise not_found_recording_error(recording_id)
+            # The id names a call of another account, e.g. one user's recording_id
+            # sent with another user's token.
+            if fault_code in ("Server.CDR.forbidden_account_access",):
+                raise forbidden_recording_error(recording_id)
 
             raise error
 
@@ -1699,6 +1704,10 @@ class PortaSwitchAdapter(BSSAdapter):
                 "Server.CDR.transcription_not_found",
             ):
                 raise not_found_transcription_error(recording_id)
+            # Another account's call: a 403, so a client polling for the transcript
+            # stops instead of waiting for one it will never be given.
+            if fault_code in ("Server.CDR.forbidden_account_access",):
+                raise forbidden_recording_error(recording_id)
 
             raise error
 

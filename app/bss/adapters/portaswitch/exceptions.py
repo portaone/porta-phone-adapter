@@ -41,6 +41,12 @@ def not_found_transcription_error(recording_id: str):
     return WebTritErrorException(404, f"There is no a transcription for the recording with such id: {recording_id}")
 
 
+def forbidden_recording_error(recording_id: str):
+    return WebTritErrorException(
+        403, f"The recording with such id belongs to another account: {recording_id}", "forbidden_account_access"
+    )
+
+
 def invalid_recording_id_error(recording_id: str):
     return WebTritErrorException(422, f"Malformed recording id: {recording_id}", "validation_error")
 

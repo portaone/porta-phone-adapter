@@ -47,10 +47,12 @@ from bss.types import (
     GetUserInfoNotFoundErrorResponse,
     GetUserInfoUnauthorizedErrorResponse,
     GetUserInfoUnprocessableEntityErrorResponse,
+    GetUserRecordingForbiddenErrorResponse,
     GetUserRecordingInternalServerErrorErrorResponse,
     GetUserRecordingNotFoundErrorResponse,
     GetUserRecordingUnauthorizedErrorResponse,
     GetUserRecordingUnprocessableEntityErrorResponse,
+    GetUserRecordingTranscriptionForbiddenErrorResponse,
     GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
     GetUserRecordingTranscriptionNotFoundErrorResponse,
     GetUserRecordingTranscriptionUnauthorizedErrorResponse,
@@ -817,6 +819,7 @@ async def get_user_history_list(
     response_class=Response,
     responses={
         '401': {'model': GetUserRecordingUnauthorizedErrorResponse},
+        '403': {'model': GetUserRecordingForbiddenErrorResponse},
         '404': {'model': GetUserRecordingNotFoundErrorResponse},
         '422': {'model': GetUserRecordingUnprocessableEntityErrorResponse},
         '500': {'model': GetUserRecordingInternalServerErrorErrorResponse},
@@ -830,6 +833,7 @@ async def get_user_recording(
 ) -> Union[
     BinaryResponse,
     GetUserRecordingUnauthorizedErrorResponse,
+    GetUserRecordingForbiddenErrorResponse,
     GetUserRecordingNotFoundErrorResponse,
     GetUserRecordingUnprocessableEntityErrorResponse,
     GetUserRecordingInternalServerErrorErrorResponse,
@@ -854,6 +858,7 @@ async def get_user_recording(
     response_class=Response,
     responses={
         '401': {'model': GetUserRecordingTranscriptionUnauthorizedErrorResponse},
+        '403': {'model': GetUserRecordingTranscriptionForbiddenErrorResponse},
         '404': {'model': GetUserRecordingTranscriptionNotFoundErrorResponse},
         '422': {'model': GetUserRecordingTranscriptionUnprocessableEntityErrorResponse},
         '500': {'model': GetUserRecordingTranscriptionInternalServerErrorErrorResponse},
@@ -876,6 +881,7 @@ async def get_user_recording_transcription(
         _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
 ) -> Union[
     GetUserRecordingTranscriptionUnauthorizedErrorResponse,
+    GetUserRecordingTranscriptionForbiddenErrorResponse,
     GetUserRecordingTranscriptionNotFoundErrorResponse,
     GetUserRecordingTranscriptionUnprocessableEntityErrorResponse,
     GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
@@ -889,7 +895,8 @@ async def get_user_recording_transcription(
     as several files - passed through with its own content type and no wrapper.
 
     A recorded call is not transcribed instantly, and an id issued before this
-    functionality existed carries no transcription key; both answer `404`.
+    functionality existed carries no transcription key; both answer `404`. An id
+    of another user's call answers `403` - polling it will never succeed.
     """
     global bss, bss_capabilities
 
