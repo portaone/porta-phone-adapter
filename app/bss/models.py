@@ -295,6 +295,20 @@ class DeleteUserInfoInternalServerErrorErrorResponse(ErrorResponse):
     pass
 
 
+class GetUserRecordingForbiddenErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `forbidden_account_access`",
+    )
+
+
+class GetUserRecordingTranscriptionForbiddenErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `forbidden_account_access`",
+    )
+
+
 class GetUserRecordingNotFoundErrorResponse(ErrorResponse):
     pass
 

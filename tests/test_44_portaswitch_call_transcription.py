@@ -174,6 +174,17 @@ class TestFaultMapping:
         assert raised.value.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_another_accounts_recording_answers_403(self):
+        """WT-2046 - one user's recording_id sent with another user's token."""
+        adapter = make_adapter(FakeAccountAPI(error=fault_error("Server.CDR.forbidden_account_access")))
+
+        with pytest.raises(WebTritErrorException) as raised:
+            await adapter.retrieve_call_transcription(session(), CallRecordingId(RECORDING_ID))
+
+        assert raised.value.status_code == 403
+        assert raised.value.code == "forbidden_account_access"
+
+    @pytest.mark.asyncio
     async def test_a_stale_session_token_answers_401(self):
         adapter = make_adapter(
             FakeAccountAPI(error=fault_error("Client.Session.check_auth.failed_to_process_access_token"))
@@ -312,6 +323,22 @@ class TestTheAudioDownloadStillWorks:
             await adapter.retrieve_call_recording(session(), CallRecordingId("not an id at all!"))
 
         assert raised.value.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_another_accounts_recording_answers_403(self):
+        """WT-2046 - CDR/get_call_recording refuses a call of another account."""
+
+        class FakeRecordingAPI:
+            async def get_call_recording(self, **kwargs):
+                raise fault_error("Server.CDR.forbidden_account_access")
+
+        adapter = make_adapter(FakeRecordingAPI())
+
+        with pytest.raises(WebTritErrorException) as raised:
+            await adapter.retrieve_call_recording(session(), CallRecordingId(RECORDING_ID))
+
+        assert raised.value.status_code == 403
+        assert raised.value.code == "forbidden_account_access"
 
 
 class TestSerializerHandsOutAUsableId:

@@ -168,6 +168,9 @@ An id a client stored before the upgrade is a bare number. It still downloads th
 audio; asking it for a transcript answers `404`, and re-reading the call history yields
 an id that works.
 
+An id of another account's call answers `403 forbidden_account_access` on both the
+download and the transcript (WT-2046), so a client polling for a transcript stops.
+
 ## Call history date range (PortaSwitch)
 
 `GET /user/history` takes optional `time_from` / `time_to` query parameters and forwards

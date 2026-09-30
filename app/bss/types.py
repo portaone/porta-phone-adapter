@@ -79,11 +79,13 @@ from bss.models import (
     GetUserInfoUnauthorizedErrorResponse as GetUserInfoUnauthorizedErrorResponse,
     GetUserInfoUnprocessableEntityErrorResponse as GetUserInfoUnprocessableEntityErrorResponse,
     GetUserRecordingInternalServerErrorErrorResponse as GetUserRecordingInternalServerErrorErrorResponse,
+    GetUserRecordingForbiddenErrorResponse as GetUserRecordingForbiddenErrorResponse,
     GetUserRecordingNotFoundErrorResponse as GetUserRecordingNotFoundErrorResponse,
     GetUserRecordingUnauthorizedErrorResponse as GetUserRecordingUnauthorizedErrorResponse,
     GetUserRecordingUnprocessableEntityErrorResponse as GetUserRecordingUnprocessableEntityErrorResponse,
     GetUserRecordingTranscriptionInternalServerErrorErrorResponse
     as GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
+    GetUserRecordingTranscriptionForbiddenErrorResponse as GetUserRecordingTranscriptionForbiddenErrorResponse,
     GetUserRecordingTranscriptionNotFoundErrorResponse as GetUserRecordingTranscriptionNotFoundErrorResponse,
     GetUserRecordingTranscriptionUnauthorizedErrorResponse as GetUserRecordingTranscriptionUnauthorizedErrorResponse,
     GetUserRecordingTranscriptionUnprocessableEntityErrorResponse
