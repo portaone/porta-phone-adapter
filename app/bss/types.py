@@ -48,6 +48,7 @@ from bss.models import (
     DeliveryChannel as OTPDeliveryChannel,
     Pagination as Pagination,
     CallRecordingId as CallRecordingId,
+    TranscriptionFormat as TranscriptionFormat,
 
     # error responses & codes
     CreateSessionOtpInternalServerErrorErrorResponse as CreateSessionOtpInternalServerErrorErrorResponse,
@@ -81,6 +82,12 @@ from bss.models import (
     GetUserRecordingNotFoundErrorResponse as GetUserRecordingNotFoundErrorResponse,
     GetUserRecordingUnauthorizedErrorResponse as GetUserRecordingUnauthorizedErrorResponse,
     GetUserRecordingUnprocessableEntityErrorResponse as GetUserRecordingUnprocessableEntityErrorResponse,
+    GetUserRecordingTranscriptionInternalServerErrorErrorResponse
+    as GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
+    GetUserRecordingTranscriptionNotFoundErrorResponse as GetUserRecordingTranscriptionNotFoundErrorResponse,
+    GetUserRecordingTranscriptionUnauthorizedErrorResponse as GetUserRecordingTranscriptionUnauthorizedErrorResponse,
+    GetUserRecordingTranscriptionUnprocessableEntityErrorResponse
+    as GetUserRecordingTranscriptionUnprocessableEntityErrorResponse,
     UpdateSessionInternalServerErrorErrorResponse as UpdateSessionInternalServerErrorErrorResponse,
     UpdateSessionNotFoundErrorResponse as UpdateSessionNotFoundErrorResponse,
     UpdateSessionUnprocessableEntityErrorResponse as UpdateSessionUnprocessableEntityErrorResponse,

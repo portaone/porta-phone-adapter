@@ -37,6 +37,14 @@ def not_found_recording_error(recording_id: str):
     return WebTritErrorException(404, f"There is no a recording with such id: {recording_id}")
 
 
+def not_found_transcription_error(recording_id: str):
+    return WebTritErrorException(404, f"There is no a transcription for the recording with such id: {recording_id}")
+
+
+def invalid_recording_id_error(recording_id: str):
+    return WebTritErrorException(422, f"Malformed recording id: {recording_id}", "validation_error")
+
+
 def not_found_call_queue_error(queue_id: str):
     return WebTritErrorException(
         404, f"The user is not an agent of a call queue with such id: {queue_id}", "call_queue_not_found"

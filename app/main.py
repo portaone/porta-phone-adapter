@@ -10,7 +10,7 @@ from fastapi import FastAPI, APIRouter, Depends, Response, Request, Header, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import conint
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_204_NO_CONTENT
 
 import bss.adapters
@@ -20,6 +20,7 @@ from bss.constants import TENANT_ID_HTTP_HEADER, ACCEPT_LANGUAGE_HEADER
 from bss.types import (
     BinaryResponse,
     CallRecordingId,
+    TranscriptionFormat,
     CreateSessionInternalServerErrorErrorResponse,
     CreateSessionOtpInternalServerErrorErrorResponse,
     CreateSessionOtpNotFoundErrorResponse,
@@ -50,6 +51,10 @@ from bss.types import (
     GetUserRecordingNotFoundErrorResponse,
     GetUserRecordingUnauthorizedErrorResponse,
     GetUserRecordingUnprocessableEntityErrorResponse,
+    GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
+    GetUserRecordingTranscriptionNotFoundErrorResponse,
+    GetUserRecordingTranscriptionUnauthorizedErrorResponse,
+    GetUserRecordingTranscriptionUnprocessableEntityErrorResponse,
     SessionCreateRequest,
     SessionOtpCreateRequest,
     SessionOtpCreateResponse,
@@ -841,6 +846,73 @@ async def get_user_recording(
     )
 
     return StreamingResponse(content_iterator, media_type=content_type if content_type else "application/octet-stream")
+
+
+@router.get(
+    '/user/recordings/{recording_id}/transcription',
+    # Prevent FastAPI to validate the response as JSON (default response class).
+    response_class=Response,
+    responses={
+        '401': {'model': GetUserRecordingTranscriptionUnauthorizedErrorResponse},
+        '404': {'model': GetUserRecordingTranscriptionNotFoundErrorResponse},
+        '422': {'model': GetUserRecordingTranscriptionUnprocessableEntityErrorResponse},
+        '500': {'model': GetUserRecordingTranscriptionInternalServerErrorErrorResponse},
+    },
+    tags=['user'],
+)
+async def get_user_recording_transcription(
+        recording_id: str,
+        format: Optional[TranscriptionFormat] = Query(
+            default=None,
+            description='`json` for the structured transcription with timestamps, `text` for the '
+                        'transcribed text only. The **Adaptee** decides the default (`json`).',
+        ),
+        check_only: Optional[bool] = Query(
+            default=None,
+            description='Only report whether a transcription exists, without returning it. '
+                        'Use it to poll a call whose transcription is still being produced.',
+        ),
+        auth_data: HTTPAuthorizationCredentials = Depends(security),
+        _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
+) -> Union[
+    GetUserRecordingTranscriptionUnauthorizedErrorResponse,
+    GetUserRecordingTranscriptionNotFoundErrorResponse,
+    GetUserRecordingTranscriptionUnprocessableEntityErrorResponse,
+    GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
+]:
+    """
+    Return the speech-to-text transcription of a previously recorded call.
+
+    `recording_id` is the one `GET /user/history` returned for the call, the same id
+    `GET /user/recordings/{recording_id}` takes. The body is whatever the **Adaptee**
+    produced - a JSON document, plain text, or an archive when the call was recorded
+    as several files - passed through with its own content type and no wrapper.
+
+    A recorded call is not transcribed instantly, and an id issued before this
+    functionality existed carries no transcription key; both answer `404`.
+    """
+    global bss, bss_capabilities
+
+    is_method_allowed(Capabilities.transcription)
+
+    access_token = auth_data.credentials
+    session = await call_bss(bss.validate_session, access_token)
+    # Only the header fetch is bounded by the deadline; a streamed body follows below.
+    result = await call_bss(
+        bss.retrieve_call_transcription,
+        session,
+        CallRecordingId(recording_id),
+        format.value if format else None,
+        bool(check_only),
+    )
+
+    if isinstance(result, tuple):
+        content_type, content_iterator = result
+        return StreamingResponse(
+            content_iterator, media_type=content_type if content_type else "application/octet-stream"
+        )
+
+    return JSONResponse(content=result)
 
 
 @router.get(
