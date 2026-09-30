@@ -100,6 +100,69 @@ too. It is off by default because transcription is a PortaSwitch service feature
 deployment subscribes to and is charged for — turning it on where it is not configured
 makes clients offer a control that answers 404.
 
+Other switches:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CAPABILITIES_SIGNUP` | `false` | Self sign-up of new users (`POST /user`) |
+| `CAPABILITIES_PASSWORD` | `true` | Sign-in with login and password (`POST /session`) |
+| `CAPABILITIES_OTP` | `false` | Sign-in with a one-time password (`POST /session/otp-create`, `/session/otp-verify`) |
+| `CAPABILITIES_AUTO_PROVISION` | `false` | Sign-in with a config token (`POST /session/auto-provision`). Not coded by the PortaSwitch adapter |
+| `CAPABILITIES_CDRS` | `false` | Call history (`GET /user/history`). Off, the route answers an empty list |
+| `CAPABILITIES_EXTENSIONS` | `true` | The contact list (`GET /user/contacts`). Off, the route answers an empty list |
+| `CAPABILITIES_CUSTOM_METHODS` | `false` | `POST /custom/public/…` and `/custom/private/…` — for PortaSwitch, `custom-pages` (the self-config portal) and `external-page-access-token` |
+| `CAPABILITIES_INTERNAL_MESSAGING` | `true` | Chat between WebTrit users. A Core feature; the adapter has no route behind it |
+| `CAPABILITIES_SMS_MESSAGING` | `false` | SMS conversations. A Core feature; the adapter has no route behind it |
+| `CAPABILITIES_USER_EVENTS` | `false` | `POST /user/events`. Not coded by the PortaSwitch adapter |
+| `CAPABILITIES_NOTIFICATIONS` | `false` | The in-app notification list. A Core feature; the adapter has no route behind it |
+| `CAPABILITIES_NOTIFICATIONS_PUSH` | `false` | Core sends a push notification for a new notification or sign-in only while this is on |
+| `CAPABILITIES_CONFERENCE` | `false` | Merging calls into a conference. Happens entirely in Core and Janus — advertising only (WT-783) |
+| `CAPABILITIES_CONVERSATION_MUTE` | `true` | Muting one chat or SMS conversation. Stored and enforced by Core — advertising only (WT-1880) |
+| `CAPABILITIES_CALL_CENTER` | `false` | The "My Queues" screen (`/user/queues`, WT-1881) |
+
+## PortaSwitch adapter settings
+
+The PortaSwitch adapter (`BSS_ADAPTER_MODULE=bss.adapters.portaswitch`,
+`BSS_ADAPTER_CLASS=PortaSwitchAdapter`) reads its settings from env variables through
+pydantic (`app/bss/adapters/portaswitch/config.py`). Names are used exactly as
+listed and are case-insensitive. Booleans are read by pydantic
+(`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`), and lists are separated by `;`. The four
+variables without a default are mandatory — the adapter does not start without them.
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `PORTASWITCH_ADMIN_API_URL` | yes | — | Base URL of the PortaBilling admin realm API, e.g. `https://pbx.example.com` (`/rest/…` is appended) |
+| `PORTASWITCH_ADMIN_API_LOGIN` | yes | — | Login of the PortaBilling admin user the adapter acts as |
+| `PORTASWITCH_ADMIN_API_TOKEN` | yes | — | API token of that admin user. Also the key that encrypts the admin session stored with a pending OTP |
+| `PORTASWITCH_ACCOUNT_API_URL` | yes | — | Base URL of the PortaBilling account realm API |
+| `PORTASWITCH_SIP_SERVER_HOST` | no | `127.0.0.1` | SIP server host handed to the apps in the user's SIP settings — set it for any real deployment |
+| `PORTASWITCH_SIP_SERVER_PORT` | no | `5060` | SIP server port handed to the apps |
+| `PORTASWITCH_VERIFY_HTTPS` | no | `true` | Whether to verify the PortaBilling API's HTTPS certificate |
+| `PORTASWITCH_API_TIMEOUT` | no | `25` | Timeout in seconds for each PortaBilling API request, applied to connect, read, write and pool alike. Blank, non-numeric or non-positive falls back to 5 s connect / 25 s read (WT-1717) |
+| `PORTASWITCH_MAX_CONNECTIONS` | no | `100` | See [Outbound connection pool](#outbound-connection-pool-portaswitch) |
+| `PORTASWITCH_MAX_KEEPALIVE_CONNECTIONS` | no | unset | See [Outbound connection pool](#outbound-connection-pool-portaswitch) |
+| `PORTASWITCH_ADMIN_API_URL_STANDBY` | no | unset | Admin API URL of the disaster-recovery standby site. Failover is on only when both standby URLs are set; with one of them set it stays off and a warning is logged (WT-1654) |
+| `PORTASWITCH_ACCOUNT_API_URL_STANDBY` | no | unset | Account API URL of the standby site |
+| `PORTASWITCH_VERIFY_HTTPS_STANDBY` | no | unset — follows `PORTASWITCH_VERIFY_HTTPS` | See [Standby site certificate verification](#standby-site-certificate-verification-portaswitch) |
+| `PORTASWITCH_SITE_RECHECK_INTERVAL` | no | `60` | Minimum seconds between probes of the main site's `operating_mode` while running on the standby; a probe starts only when a request arrives |
+| `PORTASWITCH_SITE_SWITCH_BACK_THRESHOLD` | no | `2` | Consecutive `normal` probes needed to switch back to the main site (at least 1) |
+| `PORTASWITCH_SIGNIN_CREDENTIALS` | no | `self-care` | Which account fields password sign-in checks: `self-care` — `login` and `password`; `sip` — `id` and `h323_password`. An unknown value means `self-care` |
+| `PORTASWITCH_CONTACTS_SELECTING` | no | `accounts` | Source of the contact list: `accounts` (the customer's accounts), `extensions` (its extensions), `phonebook` (the user's phonebook) or `phone_directory` (the phone directories). An unknown value means `accounts` |
+| `PORTASWITCH_CONTACTS_SELECTING_EXTENSION_TYPES` | no | all — `Unassigned;Account;Group` | `extensions` mode only: which extension types are listed. An unknown name is read as `Unassigned` |
+| `PORTASWITCH_CONTACTS_SELECTING_CUSTOMER_IDS` | no | empty | `phonebook` and `phone_directory` modes: `i_customer`s whose account lists are scanned to match entries to accounts. Empty, each number is looked up on its own |
+| `PORTASWITCH_CONTACTS_SKIP_WITHOUT_EXTENSION` | no | `false` | `accounts` mode only: leave out accounts that have no extension |
+| `PORTASWITCH_CONTACTS_CACHE_TTL` | no | `0` — no cache | Seconds to reuse a customer's account list for contacts before reading it again. Pick a value well above one full read (WT-1922) |
+| `PORTASWITCH_CONTACTS_CUSTOM` | no | empty | Extra contacts appended in every mode: JSON objects separated by `;`, each `{"name": "…", "number": "…"}` |
+| `PORTASWITCH_CALL_HISTORY_DEFAULT_WINDOW_HOURS` | no | `24` | See [Call history date range](#call-history-date-range-portaswitch) |
+| `PORTASWITCH_HIDE_BALANCE_IN_USER_INFO` | no | `false` | Leave the balance out of the user info |
+| `PORTASWITCH_SELF_CONFIG_PORTAL_URL` | no | unset | When set, `POST /custom/private/custom-pages` offers a "Self-config Portal" page at this URL with `?token=<access token>` appended. Needs `CAPABILITIES_CUSTOM_METHODS` |
+| `PORTASWITCH_ALLOWED_ADDONS` | no | empty — no restriction | See [Add-on restricted sign-in](#add-on-restricted-sign-in-portaswitch) |
+| `OTP_IGNORE_ACCOUNTS` | no | empty | Sign-in identifiers whose OTP is accepted even when PortaBilling rejects the code — test and review accounts only |
+| `OTP_STORAGE_COLLECTION` | no | unset — process memory | Firestore collection that keeps pending OTPs. Unset, they live in the process's memory, which breaks OTP sign-in when more than one instance serves requests |
+| `OTP_STORAGE_TTL_MINUTES` | no | `30` | Firestore only: the `expires_at` written on each pending OTP. Cleanup needs a Firestore TTL policy on that field |
+| `JANUS_SIP_FORCE_TCP` | no | `false` | Hand the apps TCP instead of UDP as the SIP transport |
+| `ENABLE_ON_DEMAND_SESSION_MIGRATION` | no | `false` | Migrating sessions of an older adapter: a non-JWT access token answers "session upgrade needed" instead of "invalid", and a refresh token made only of digits is looked up in the hash table and, if absent, taken as an `i_account` itself; either way it is exchanged for a new session of that account without a password. Builds a table of a million hashes at start-up |
+
 ## Outbound connection pool (PortaSwitch)
 
 Every PortaSwitch call goes through one process-wide `httpx.AsyncClient` per TLS-verify
