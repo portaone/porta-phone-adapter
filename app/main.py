@@ -797,12 +797,18 @@ async def get_user_history_list(
             time_to=time_to,
         )
 
-        return Calls(items=calls,
-                     pagination=Pagination(
-                         page=page,
-                         items_total=total,
-                         items_per_page=items_per_page)
-                     )
+        history = Calls(items=calls,
+                        pagination=Pagination(
+                            page=page,
+                            items_total=total,
+                            items_per_page=items_per_page)
+                        )
+        # GET /user/recordings answers 501 without the capability, so an id here
+        # would only give clients a player that can never play (WT-2048)
+        if Capabilities.recordings not in bss_capabilities:
+            for call in history.items or []:
+                call.recording_id = None
+        return history
 
     # not supported by hosted PBX / BSS, return an empty list
     return Calls(items=[],

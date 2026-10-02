@@ -100,6 +100,10 @@ too. It is off by default because transcription is a PortaSwitch service feature
 deployment subscribes to and is charged for — turning it on where it is not configured
 makes clients offer a control that answers 404.
 
+With `recordings` off, `GET /user/history` returns `recording_id: null` for every call
+(WT-2048): the recording route answers 501 then, so an id would only make clients offer
+a player that cannot play.
+
 Other switches:
 
 | Variable | Default | Purpose |
