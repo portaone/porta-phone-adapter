@@ -39,7 +39,7 @@ ENV DEBUG="True"
 
 ENV PORTASWITCH_ADMIN_API_URL="https://<admin-ip>:<admin-port>"
 ENV PORTASWITCH_ADMIN_API_LOGIN="<admin-login>"
-ENV PORTASWITCH_ADMIN_API_PASSWORD="<admin-password>"
+ENV PORTASWITCH_ADMIN_API_TOKEN="<admin-token>"
 ENV PORTASWITCH_ACCOUNT_API_URL="https://<account-ip>:<account-port>"
 
 ENV PORTASWITCH_SIP_SERVER_HOST="<sip-server-ip>"
