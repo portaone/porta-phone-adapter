@@ -87,6 +87,7 @@ def adapter(accounts, allowed_addons=(ALLOWED_ADDON,)):
     subject = object.__new__(PortaSwitchAdapter)
     subject._admin_api = FakeAdminAPI(accounts)
     subject._otp_storage = FakeOTPStorage()
+    subject._init_env_email_cache_state()
     subject._portaswitch_settings = types.SimpleNamespace(
         ALLOWED_ADDONS=list(allowed_addons),
         ADMIN_API_TOKEN="token",
