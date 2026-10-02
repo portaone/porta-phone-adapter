@@ -111,6 +111,11 @@ HUNTGROUP_MAX_PAGES: Final[int] = 20
 #: screens. Sized to cover the 5-10s client poll interval.
 CALL_QUEUE_COUNTERS_TTL: Final[int] = 5
 
+#: int: Seconds to reuse the environment's notification email from Env/get_env_info.
+#: It is an environment setting, the same for every account, and changes rarely if
+#: ever, so OTP sign-ins don't pay a switch round trip for it each time (WT-1663).
+ENV_EMAIL_CACHE_TTL: Final[int] = 3600
+
 #: object: Sentinel telling "nothing usable in the cache" apart from a cached None,
 #: which legitimately means "the counters are unknown for this customer right now".
 _COUNTERS_CACHE_MISS: Final = object()
@@ -323,6 +328,7 @@ class PortaSwitchAdapter(BSSAdapter):
 
         self._init_call_queue_state()
         self._init_contacts_cache_state()
+        self._init_env_email_cache_state()
 
         self._otp_storage = configure_otp_storage(self._otp_settings)
         self._cached_capabilities = self.calculate_capabilities()
@@ -353,6 +359,34 @@ class PortaSwitchAdapter(BSSAdapter):
         # In-flight background refreshes, kept referenced: the event loop only
         # holds a weak reference to a task.
         self._accounts_refresh_tasks: Dict[int, asyncio.Task] = {}
+
+    def _init_env_email_cache_state(self) -> None:
+        """Sets up the cache of the environment's notification email (WT-1663).
+
+        Its own method for the same reason as _init_call_queue_state: tests that
+        bypass __init__ still get the real attributes.
+        """
+        # (monotonic ts, email) of the last successful Env/get_env_info, or None.
+        self._env_email_cache: Optional[tuple] = None
+
+    async def _notification_email(self) -> Optional[str]:
+        """Returns the email OTP codes are sent from, or None if it cannot be read.
+
+        Best effort: the address is only shown to the user, so a failed lookup
+        must not fail the OTP request. Failures are not cached.
+        """
+        cached = self._env_email_cache
+        if cached is not None and time.monotonic() - cached[0] < ENV_EMAIL_CACHE_TTL:
+            return cached[1]
+
+        try:
+            email = (await self._admin_api.get_env_info()).get("email")
+        except Exception as e:
+            logging.warning(f"Failed to read the notification email from Env/get_env_info: {e}")
+            return None
+
+        self._env_email_cache = (time.monotonic(), email)
+        return email
 
     @classmethod
     def name(cls) -> str:
@@ -440,7 +474,14 @@ class PortaSwitchAdapter(BSSAdapter):
                 or OTP generation fails.
         """
         try:
-            account_info = (await self._admin_api.get_account_info(id=user.user_id)).get("account_info")
+            # The notification email is read before create_otp, not after it: once the
+            # code is sent, a slow or failed switch call would turn the request into an
+            # error, and the client's retry would send the user a second code (WT-1663).
+            account_resp, delivery_from = await asyncio.gather(
+                self._admin_api.get_account_info(id=user.user_id),
+                self._notification_email(),
+            )
+            account_info = account_resp.get("account_info")
             if not account_info:
                 raise not_found_user_error(user.user_id)
 
@@ -470,10 +511,8 @@ class PortaSwitchAdapter(BSSAdapter):
             # OTP storage may be Firestore-backed (blocking I/O) — keep it off the loop.
             await asyncio.to_thread(self._otp_storage.store, otp_id, i_account, user.user_id, stored_token)
 
-            env_info = await self._admin_api.get_env_info()
-
             return OTPCreateResponse(
-                otp_id=OtpId(otp_id), delivery_channel=self.OTP_DELIVERY_CHANNEL, delivery_from=env_info.get("email")
+                otp_id=OtpId(otp_id), delivery_channel=self.OTP_DELIVERY_CHANNEL, delivery_from=delivery_from
             )
 
         except WebTritErrorException as error:
