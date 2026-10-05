@@ -76,12 +76,9 @@ Voicemail (WT-1878):
 | Variable | Default | Purpose |
 |---|---|---|
 | `CAPABILITIES_VOICEMAIL` | `false` | The voicemail screen at all. Every voicemail functionality below is dropped when this is off |
+| `CAPABILITIES_VOICEMAIL_SAVE` | `true` | Keeping a message out of the new-message list. Backed by the IMAP `\Flagged` flag on the PortaSwitch mailbox |
+| `CAPABILITIES_VOICEMAIL_TRASH` | `true` | Delete moves a message to a trash it can be restored from. Implemented and stored by Core. Off, clients delete immediately and permanently |
 | `CAPABILITIES_VOICEMAIL_FORWARD` | `true` | Passing a message on to another user. Implemented and stored by Core — the mailbox has no forward API |
-
-`voicemailSave` and `voicemailTrash` have no switch of their own: whenever the
-voicemail screen is on, both are advertised. Save is backed by the IMAP `\Flagged`
-flag on the PortaSwitch mailbox; trash means a `DELETE` moves the message to a trash
-it can be restored from, and is Core's own.
 
 `voicemailTrash` and `voicemailForward` describe Core behaviour, not PortaSwitch
 behaviour; they are advertised here only so a client can tell a Core that speaks them
