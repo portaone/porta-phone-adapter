@@ -245,13 +245,16 @@ class TestVoicemailCapabilities:
     def test_enabled_by_default_alongside_voicemail(self):
         assert VOICEMAIL_SUB_CAPABILITIES <= capabilities_of(VOICEMAIL="1")
 
-    def test_save_and_trash_have_no_switch_of_their_own(self):
-        # Both come with the voicemail screen; the config variables that used to turn
-        # them off are gone, so a leftover value in a deployment config is inert.
-        enabled = capabilities_of(VOICEMAIL="1", VOICEMAIL_SAVE="0", VOICEMAIL_TRASH="0")
+    @pytest.mark.parametrize("option, capability", [
+        ("VOICEMAIL_SAVE", Capabilities.voicemail_save),
+        ("VOICEMAIL_TRASH", Capabilities.voicemail_trash),
+        ("VOICEMAIL_FORWARD", Capabilities.voicemail_forward),
+    ])
+    def test_each_switch_withdraws_only_its_own(self, option, capability):
+        enabled = capabilities_of(VOICEMAIL="1", **{option: "0"})
 
-        assert Capabilities.voicemail_save in enabled
-        assert Capabilities.voicemail_trash in enabled
+        assert capability not in enabled
+        assert VOICEMAIL_SUB_CAPABILITIES - {capability} <= enabled
 
     def test_dropped_when_voicemail_itself_is_off(self):
         # Advertising a voicemail control on a deployment with no voicemail screen would
@@ -260,13 +263,6 @@ class TestVoicemailCapabilities:
 
         assert Capabilities.voicemail not in enabled
         assert not (VOICEMAIL_SUB_CAPABILITIES & enabled)
-
-    def test_forward_is_the_only_one_still_switchable(self):
-        enabled = capabilities_of(VOICEMAIL="1", VOICEMAIL_FORWARD="0")
-
-        assert Capabilities.voicemail_forward not in enabled
-        assert Capabilities.voicemail_save in enabled
-        assert Capabilities.voicemail_trash in enabled
 
 
 class TestCapabilityCalculation:
