@@ -825,7 +825,11 @@ class CDRInfo(BaseModel):
         example="2023-01-01T09:01:00Z",
     )
     duration: Optional[int] = Field(None, description="Call duration (in seconds), 0 for failed calls.", example=60)
-    recording_id: Optional[CallRecordingId] = None
+    recording_id: Optional[CallRecordingId] = Field(
+        None,
+        description="Identifies the call recording for `GET /user/recordings/{recording_id}`; "
+        "null when the call was not recorded or `recordings` is not supported.",
+    )
     status: ConnectStatus = Field(..., description="Indicates the call status.")
 
 
