@@ -50,7 +50,8 @@ from .exceptions import (
     method_not_found_error,
     external_api_issue_error,
     not_found_user_error,
-    not_found_otp_code_error,
+    incorrect_otp_code_error,
+    otp_expired_error,
     not_found_contact_error,
     not_found_recording_error,
     not_found_transcription_error,
@@ -541,7 +542,9 @@ class PortaSwitchAdapter(BSSAdapter):
 
             i_account, user_ref, stored_token = await asyncio.to_thread(self._otp_storage.retrieve, otp_id)
             if not i_account:
-                raise not_found_otp_code_error(otp.code)
+                # Core answers unknown and used otp_ids itself, so a miss here is an
+                # entry the storage TTL (or a restart of in-memory storage) dropped.
+                raise otp_expired_error()
 
             # WT-1686: verify under the same PortaSwitch admin session that
             # created the OTP (decrypted from storage), so verification succeeds
@@ -549,7 +552,7 @@ class PortaSwitchAdapter(BSSAdapter):
             bss_token = decrypt_secret(stored_token, self._portaswitch_settings.ADMIN_API_TOKEN) if stored_token else None
             data: dict = await self._admin_api.verify_otp(otp_token=otp.code, bss_token=bss_token)
             if user_ref not in self._otp_settings.IGNORE_ACCOUNTS and not data["success"]:
-                raise not_found_otp_code_error(otp.code)
+                raise incorrect_otp_code_error(otp.code)
 
             await asyncio.to_thread(self._otp_storage.delete, otp_id)
 

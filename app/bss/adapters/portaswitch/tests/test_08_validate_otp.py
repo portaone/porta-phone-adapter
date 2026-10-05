@@ -14,8 +14,8 @@ class TestValidateOtp:
             },
         )
 
-        assert response.status_code == 404
-        assert response.json()['message'] == f'Incorrect OTP code: {invalid_token}'
+        assert response.status_code == 401
+        assert response.json()['code'] == 'otp_expired'
 
     def test_validate_otp(self, valid_otp_id: str, valid_otp_code: str, api_url: str, otp_verify_path: str):
         response: requests.models.Response = requests.post(

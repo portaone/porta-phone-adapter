@@ -29,8 +29,12 @@ def not_found_contact_error(contact_id: str):
     return WebTritErrorException(404, f"There is no an account with such id: {contact_id}", "contact_not_found")
 
 
-def not_found_otp_code_error(code: str):
-    return WebTritErrorException(404, f"Incorrect OTP code: {code}")
+def incorrect_otp_code_error(code: str):
+    return WebTritErrorException(401, f"Incorrect OTP code: {code}", "incorrect_otp_code")
+
+
+def otp_expired_error():
+    return WebTritErrorException(401, "OTP has expired", "otp_expired")
 
 
 def not_found_recording_error(recording_id: str):
