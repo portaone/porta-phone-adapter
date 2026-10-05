@@ -95,6 +95,7 @@ from bss.models import (
     UpdateSessionUnprocessableEntityErrorResponse as UpdateSessionUnprocessableEntityErrorResponse,
     VerifySessionOtpInternalServerErrorErrorResponse as VerifySessionOtpInternalServerErrorErrorResponse,
     VerifySessionOtpNotFoundErrorResponse as VerifySessionOtpNotFoundErrorResponse,
+    VerifySessionOtpUnauthorizedErrorResponse as VerifySessionOtpUnauthorizedErrorResponse,
     VerifySessionOtpUnprocessableEntityErrorResponse as VerifySessionOtpUnprocessableEntityErrorResponse,
 
     # custom methods

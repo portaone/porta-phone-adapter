@@ -76,6 +76,7 @@ from bss.types import (
     EndUser,
     VerifySessionOtpInternalServerErrorErrorResponse,
     VerifySessionOtpNotFoundErrorResponse,
+    VerifySessionOtpUnauthorizedErrorResponse,
     VerifySessionOtpUnprocessableEntityErrorResponse,
     Pagination,
     SessionInfo,
@@ -432,6 +433,7 @@ async def create_session_otp(
     '/session/otp-verify',
     response_model=SessionInfo,
     responses={
+        '401': {'model': VerifySessionOtpUnauthorizedErrorResponse},
         '404': {'model': VerifySessionOtpNotFoundErrorResponse},
         '422': {'model': VerifySessionOtpUnprocessableEntityErrorResponse},
         '500': {'model': VerifySessionOtpInternalServerErrorErrorResponse},
@@ -443,6 +445,7 @@ async def verify_session_otp(
         x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
 ) -> Union[
     SessionInfo,
+    VerifySessionOtpUnauthorizedErrorResponse,
     VerifySessionOtpNotFoundErrorResponse,
     VerifySessionOtpUnprocessableEntityErrorResponse,
     VerifySessionOtpInternalServerErrorErrorResponse,
