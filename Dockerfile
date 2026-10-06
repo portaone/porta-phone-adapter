@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS base
 
 RUN mkdir /app
 WORKDIR /app
@@ -23,6 +23,22 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
+
+# Unit tests for the Gerrit check (WT-2002): `docker build --target test`, see
+# .jenkins/README.md. The tests find the adapter at ../app, so the repository layout is
+# kept under /src.
+FROM base AS test
+WORKDIR /src
+COPY tests/requirements.txt tests/
+RUN pip install --no-cache-dir -r tests/requirements.txt
+COPY pyproject.toml ./
+COPY app app
+COPY tests tests
+# Unit tests only: test_01..test_15 are integration tests that need a running adapter.
+CMD ["python", "-m", "pytest", "-p", "no:warnings", "tests", "--ignore-glob=tests/test_[01]*"]
+
+# The adapter image. Kept last, so a build without --target produces it.
+FROM base
 
 COPY app /app/
 RUN chmod 755 /app/start-web-server.sh

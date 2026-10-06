@@ -1,0 +1,8 @@
+# Gerrit check (WT-2002): adapter unit tests, the `test` stage of the root Dockerfile.
+# Run from the repository root:
+#   docker compose -f .jenkins/gerrit_check/compose.yml run --rm --build test
+services:
+  test:
+    build:
+      context: ../..
+      target: test
