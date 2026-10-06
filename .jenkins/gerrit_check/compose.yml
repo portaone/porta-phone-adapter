@@ -1,0 +1,17 @@
+# Gerrit check (WT-2002): adapter unit tests. Run from the repository root:
+#   docker compose -f .jenkins/gerrit_check/compose.yml run --rm --build test
+services:
+  test:
+    build:
+      context: ../..
+      dockerfile: .jenkins/gerrit_check/Dockerfile
+    environment:
+      # The PortaSwitch settings are read when the adapter modules are imported, and
+      # pytest imports every test file before running any of them. Some test files set
+      # these placeholders with os.environ.setdefault() and some do not, so without them
+      # the run would depend on the collection order. Same values the tests use.
+      PORTASWITCH_ADMIN_API_URL: https://pbx.example.com
+      PORTASWITCH_ACCOUNT_API_URL: https://pbx.example.com
+      PORTASWITCH_ADMIN_API_LOGIN: admin
+      PORTASWITCH_ADMIN_API_TOKEN: token
+      PORTASWITCH_SIP_SERVER_HOST: 1.2.3.4
