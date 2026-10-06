@@ -1,34 +1,18 @@
-import sys
 import os
-import types
-import importlib.util
+import sys
 
 _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
 
-_ps_path = os.path.join(_app_path, 'bss', 'adapters', 'portaswitch')
+# PortaSwitchSettings is instantiated when the portaswitch package is imported and its
+# URL/credential fields are mandatory; supply throwaway values before importing it.
+os.environ.setdefault('PORTASWITCH_ADMIN_API_URL', 'https://pbx.example.com')
+os.environ.setdefault('PORTASWITCH_ACCOUNT_API_URL', 'https://pbx.example.com')
+os.environ.setdefault('PORTASWITCH_ADMIN_API_LOGIN', 'admin')
+os.environ.setdefault('PORTASWITCH_ADMIN_API_TOKEN', 'token')
+os.environ.setdefault('PORTASWITCH_SIP_SERVER_HOST', '1.2.3.4')
 
-# Register a stub package so relative imports inside serializer.py resolve correctly,
-# without executing __init__.py (which loads PortaSwitchAdapter and requires env vars).
-_ps_pkg = types.ModuleType('bss.adapters.portaswitch')
-_ps_pkg.__path__ = [_ps_path]
-_ps_pkg.__package__ = 'bss.adapters.portaswitch'
-sys.modules['bss.adapters.portaswitch'] = _ps_pkg
-
-
-def _load(name, filename):
-    full = f'bss.adapters.portaswitch.{name}'
-    spec = importlib.util.spec_from_file_location(full, os.path.join(_ps_path, filename))
-    mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = 'bss.adapters.portaswitch'
-    sys.modules[full] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_load('types', 'types.py')
-_serializer = _load('serializer', 'serializer.py')
-Serializer = _serializer.Serializer
+from bss.adapters.portaswitch.serializer import Serializer
 
 
 def _make_cdr(**overrides) -> dict:
