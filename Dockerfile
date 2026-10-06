@@ -1,10 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS base
 
 RUN mkdir /app
 WORKDIR /app
 
 #RUN apt update
-#RUN apt-get install -f 
+#RUN apt-get install -f
 
 RUN useradd -m -s /bin/bash httpd
 RUN usermod -aG root httpd
@@ -23,6 +23,25 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
+
+# Unit tests for the Gerrit check (WT-2002): `docker build --target test`, see
+# .jenkins/README.md. The tests find the adapter at ../app, so the repository layout is
+# kept under /src.
+FROM base AS test
+WORKDIR /src
+COPY tests/requirements.txt tests/
+RUN pip install --no-cache-dir -r tests/requirements.txt
+COPY pyproject.toml ./
+COPY app app
+COPY tests tests
+# Only test_30 and up are unit tests; test_01..test_15 need a running adapter. One
+# pytest per file, because several files stub modules in sys.modules at import and break
+# each other in a shared session. Exit 5 is "no tests collected" (test_30 is a plain
+# script that checks itself at import), so it counts as a pass.
+CMD rc=0; for f in tests/test_[3-9]*.py; do python -m pytest -q -p no:warnings "$f" || [ $? -eq 5 ] || rc=1; done; exit $rc
+
+# The adapter image. Kept last, so a build without --target produces it.
+FROM base
 
 COPY app /app/
 RUN chmod 755 /app/start-web-server.sh
