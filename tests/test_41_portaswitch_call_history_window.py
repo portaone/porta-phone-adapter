@@ -309,6 +309,7 @@ async def test_get_xdr_list_pins_the_payload_sent_to_the_switch():
         "i_service_type": 3,
         "get_total": 1,
         "show_unsuccessful": 1,
+        "with_cr_download_ids": 1,
         "limit": 40,
         "offset": 80,
         "from_date": "2026-09-05 06:08:39",

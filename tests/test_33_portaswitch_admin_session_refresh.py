@@ -1,7 +1,5 @@
-import sys
 import os
-import types
-import importlib.util
+import sys
 from datetime import datetime, timedelta
 
 import pytest
@@ -9,40 +7,17 @@ import pytest
 _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
 
-_ps_path = os.path.join(_app_path, 'bss', 'adapters', 'portaswitch')
-
-# Register stub packages so relative imports inside admin.py resolve correctly,
-# without executing __init__.py (which loads PortaSwitchAdapter and requires env vars).
-_ps_pkg = types.ModuleType('bss.adapters.portaswitch')
-_ps_pkg.__path__ = [_ps_path]
-_ps_pkg.__package__ = 'bss.adapters.portaswitch'
-sys.modules['bss.adapters.portaswitch'] = _ps_pkg
-
-_api_pkg = types.ModuleType('bss.adapters.portaswitch.api')
-_api_pkg.__path__ = [os.path.join(_ps_path, 'api')]
-_api_pkg.__package__ = 'bss.adapters.portaswitch.api'
-sys.modules['bss.adapters.portaswitch.api'] = _api_pkg
-
-
-def _load(full, filename):
-    spec = importlib.util.spec_from_file_location(full, os.path.join(_ps_path, filename))
-    mod = importlib.util.module_from_spec(spec)
-    mod.__package__ = full.rsplit('.', 1)[0]
-    sys.modules[full] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_load('bss.adapters.portaswitch.config', 'config.py')
-_load('bss.adapters.portaswitch.types', 'types.py')
-_load('bss.adapters.portaswitch.exceptions', 'exceptions.py')
-_load('bss.adapters.portaswitch.utils', 'utils.py')
-_admin = _load('bss.adapters.portaswitch.api.admin', os.path.join('api', 'admin.py'))
+# PortaSwitchSettings is instantiated when the portaswitch package is imported and its
+# URL/credential fields are mandatory; supply throwaway values before importing it.
+os.environ.setdefault('PORTASWITCH_ADMIN_API_URL', 'https://pbx.example.com')
+os.environ.setdefault('PORTASWITCH_ACCOUNT_API_URL', 'https://pbx.example.com')
+os.environ.setdefault('PORTASWITCH_ADMIN_API_LOGIN', 'admin')
+os.environ.setdefault('PORTASWITCH_ADMIN_API_TOKEN', 'token')
+os.environ.setdefault('PORTASWITCH_SIP_SERVER_HOST', '1.2.3.4')
 
 from bss.http_api import HTTPAPIConnectorWithLogin, OAuthSessionData
+from bss.adapters.portaswitch.api.admin import AdminAPI
 from bss.adapters.portaswitch.config import PortaSwitchSettings
-
-AdminAPI = _admin.AdminAPI
 
 
 def make_api():
