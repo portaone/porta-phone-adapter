@@ -154,6 +154,8 @@ class BSSAdapter(SessionManagement, OTPHandler,
         CONFERENCE=dict(default=False, option=Capabilities.conference),
         CONVERSATION_MUTE=dict(default=True, option=Capabilities.conversation_mute),
         CALL_CENTER=dict(default=False, option=Capabilities.call_center),
+        VOICEMAIL_SAVE=dict(default=True, option=Capabilities.voicemail_save),
+        VOICEMAIL_TRASH=dict(default=True, option=Capabilities.voicemail_trash),
         VOICEMAIL_FORWARD=dict(default=True, option=Capabilities.voicemail_forward),
     )
     # Capabilities that only mean anything alongside another one. Advertising

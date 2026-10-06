@@ -78,10 +78,11 @@ The result is served as `supported` in `GET /system-info` and is what Core forwa
 clients so they can show or hide a control. Several entries describe features that live
 **entirely in Core** and that PortaSwitch knows nothing about — `conference` and
 `conversationMute` are pure advertising, there only so a client can tell a new Core from
-an old one, as are `voicemailSave` and `voicemailTrash`, which have no switch and come
-with `voicemail` itself. `voicemailForward` is the one Core reads: it refuses forwarding
-when the entry is absent, so switching that one off changes behaviour, not just what
-clients are told.
+an old one. `voicemailSave` and `voicemailTrash` each have their own switch; Core does
+not read `voicemailTrash`, but a client only sends `DELETE ?trash=true` when it is
+advertised, so switching it off makes Delete immediate and permanent again.
+`voicemailForward` is the one Core reads: it refuses forwarding when the entry is
+absent, so switching that one off changes behaviour, not just what clients are told.
 
 `directPresence` (WT-1834) is the same kind of entry as `voicemailForward`, not the same
 kind as `conference`: the feature is Core's own - presence exchanged between WebTrit apps

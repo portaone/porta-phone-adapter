@@ -640,7 +640,7 @@ class SystemInfoShowResponse(BaseModel):
     name: str
     supported: List[SupportedEnum] = Field(
         ...,
-        description="A list of supported functionalities by the **Adaptee**.\n\nPossible functionalities values:\n* `signup` - supports the creation of new customer accounts\n* `otpSignin` - allows user authorization via One-Time Password (OTP)\n* `passwordSignin` - allows user authorization using login and password\n* `autoProvision` - allows user authorization using config token\n* `recordings` - provides access to call recordings\n* `callHistory` - provides access to call history\n* `extensions` - retrieves the list of other users (contacts)\n* `conference` - allows merging the calls on two or more lines into an audio conference\n* `conversationMute` - allows silencing new-message notifications of a single chat or SMS conversation\n* `voicemailSave` - allows keeping a voicemail message out of the new-message list\n* `voicemailTrash` - deleting a voicemail message moves it to a trash it can be restored from\n* `voicemailForward` - allows passing a voicemail message on to another user\n* `transcription` - provides the speech-to-text transcription of a call recording\n",
+        description="A list of supported functionalities by the **Adaptee**.\n\nPossible functionalities values:\n* `signup` - supports the creation of new customer accounts\n* `otpSignin` - allows user authorization via One-Time Password (OTP)\n* `passwordSignin` - allows user authorization using login and password\n* `autoProvision` - allows user authorization using config token\n* `recordings` - provides access to call recordings\n* `callHistory` - provides access to call history\n* `extensions` - retrieves the list of other users (contacts)\n* `conference` - allows merging the calls on two or more lines into an audio conference\n* `conversationMute` - allows silencing new-message notifications of a single chat or SMS conversation\n* `voicemailSave` - allows marking a voicemail message as saved\n* `voicemailTrash` - deleting a voicemail message moves it to a trash it can be restored from\n* `voicemailForward` - allows passing a voicemail message on to another user\n* `transcription` - provides the speech-to-text transcription of a call recording\n",
     )
     version: str
 
@@ -852,8 +852,8 @@ class VoicemailMessage(BaseModel):
     )
     saved: Optional[bool] = Field(
         None,
-        description="""Indicates whether the user kept this message, so it is held out
-of the new-message list until they unsave it.
+        description="""Indicates whether the user saved this message. Independent of
+`seen`: a saved message stays new until it is heard.
 
 `null` when the **Adaptee** cannot persist the state.""",
         example=False,
