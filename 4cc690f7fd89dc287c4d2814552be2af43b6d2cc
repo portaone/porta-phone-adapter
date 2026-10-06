@@ -1,0 +1,8 @@
+Code-Review+2: Volodymyr Bohdan <volodymyr.bohdan.pe@gmail.com>
+Verified+1: gerrit
+Verified+1: leeroy jenkins <leeroy.jenkins@portaone.com>
+Submitted-by: Volodymyr Bohdan <volodymyr.bohdan.pe@gmail.com>
+Submitted-at: Tue, 06 Oct 2026 15:25:23 +0300
+Reviewed-on: https://git.portaone.com:8443/c/porta-phone/adapter_python/+/361768
+Project: porta-phone/adapter_python
+Branch: refs/heads/release/v1.1.2-r1
