@@ -320,7 +320,23 @@ class Serializer:
             # The mailbox has no folders, so "saved" is carried by the IMAP \Flagged
             # flag - the only free flag PortaBilling lets us set (WT-1878).
             saved=f"\\{PortaSwitchMailboxMessageFlag.FLAGGED.value}" in mailbox_message.get("flags", []),
+            # The list row carries the same headers as the details, so clients need not
+            # fetch the details per message for them (WT-2068). A row without them is
+            # still listed, just without a sender.
+            sender=Serializer._list_user_ref(
+                mailbox_message.get("from"), Serializer.parse_voicemail_message_sender_user_ref
+            ),
+            receiver=Serializer._list_user_ref(
+                mailbox_message.get("to"), Serializer.parse_voicemail_message_receiver_user_ref
+            ),
         )
+
+    @staticmethod
+    def _list_user_ref(header, parse) -> Optional[str]:
+        if not isinstance(header, str) or not header.strip():
+            return None
+
+        return parse(header) or None
 
     @staticmethod
     def is_voicemail_message_details_for(mailbox_message_details: dict, message_id: str) -> bool:
@@ -370,7 +386,7 @@ class Serializer:
         voicemail_message = Serializer.get_voicemail_message(mailbox_message_details)
 
         return VoicemailMessageDetails(
-            **voicemail_message.model_dump(),
+            **voicemail_message.model_dump(exclude={"sender", "receiver"}),
             sender=Serializer.parse_voicemail_message_sender_user_ref(mailbox_message_details["from"]),
             receiver=Serializer.parse_voicemail_message_receiver_user_ref(mailbox_message_details["to"]),
             attachments=[

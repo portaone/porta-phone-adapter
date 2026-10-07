@@ -103,6 +103,40 @@ class TestSavedFlag:
 
 
 # --------------------------------------------------------------------------- #
+# Serializer: the list row carries sender and receiver (WT-2068)
+# --------------------------------------------------------------------------- #
+
+class TestListSenderReceiver:
+    HEADERS = {
+        "from": "Caller #555001 <555001@188.40.90.37>",
+        "to": "555046 <555046@188.40.90.37>",
+    }
+
+    def test_list_row_carries_sender_and_receiver(self):
+        message = Serializer.get_voicemail_message(mailbox_message(**self.HEADERS))
+        assert message.sender == "555001"
+        assert message.receiver == "555046"
+
+    def test_same_values_as_the_details(self):
+        details = Serializer.get_voicemail_message_details(
+            mailbox_message(**self.HEADERS, body_structures=[])
+        )
+        message = Serializer.get_voicemail_message(mailbox_message(**self.HEADERS))
+        assert (message.sender, message.receiver) == (details.sender, details.receiver)
+
+    def test_row_without_headers_is_still_listed(self):
+        message = Serializer.get_voicemail_message(mailbox_message())
+        assert message.sender is None
+        assert message.receiver is None
+
+    @pytest.mark.parametrize("header", [None, "", "   ", 42, ["x"]])
+    def test_unusable_header_gives_none(self, header):
+        message = Serializer.get_voicemail_message(mailbox_message(**{"from": header, "to": header}))
+        assert message.sender is None
+        assert message.receiver is None
+
+
+# --------------------------------------------------------------------------- #
 # patch_voicemail_message: only what was sent is applied
 # --------------------------------------------------------------------------- #
 

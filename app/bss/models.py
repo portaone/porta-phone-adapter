@@ -876,6 +876,20 @@ class VoicemailMessage(BaseModel):
 `null` when the **Adaptee** cannot persist the state.""",
         example=False,
     )
+    sender: Optional[str] = Field(
+        None,
+        description="""The sender of the message, the same as in its details.
+
+`null` when the **Adaptee** cannot tell it from the message list.""",
+        example="Caller #123010 <123010@sip.webtrit.com>",
+    )
+    receiver: Optional[str] = Field(
+        None,
+        description="""The receiver of the message, the same as in its details.
+
+`null` when the **Adaptee** cannot tell it from the message list.""",
+        example="123009 <123009@sip.webtrit.com>",
+    )
 
 
 class VoicemailMessageAttachment(BaseModel):
