@@ -121,6 +121,15 @@ ENV_EMAIL_CACHE_TTL: Final[int] = 3600
 #: which legitimately means "the counters are unknown for this customer right now".
 _COUNTERS_CACHE_MISS: Final = object()
 
+#: str: PortaBilling custom fields, on the account or the customer, holding the device
+#: and session limits Core enforces (WT-2005).
+MAX_DEVICES_CUSTOM_FIELD: Final[str] = "portaphone_max_devices"
+MAX_DEVICE_SWITCHES_CUSTOM_FIELD: Final[str] = "portaphone_max_device_switches"
+
+#: int: Upper bound on each device-limit cache (one per i_account, one per i_customer),
+#: so a switch with many accounts cannot grow them without limit.
+DEVICE_LIMITS_CACHE_MAX: Final[int] = 10_000
+
 #: Default fan-out concurrency for parallel PortaSwitch API calls (replaces the
 #: former ThreadPoolExecutor(max_workers=10) pools). WT-1720.
 FANOUT_LIMIT: Final[int] = 10
@@ -330,6 +339,7 @@ class PortaSwitchAdapter(BSSAdapter):
         self._init_call_queue_state()
         self._init_contacts_cache_state()
         self._init_env_email_cache_state()
+        self._init_device_limits_cache_state()
 
         self._otp_storage = configure_otp_storage(self._otp_settings)
         self._cached_capabilities = self.calculate_capabilities()
@@ -369,6 +379,17 @@ class PortaSwitchAdapter(BSSAdapter):
         """
         # (monotonic ts, email) of the last successful Env/get_env_info, or None.
         self._env_email_cache: Optional[tuple] = None
+
+    def _init_device_limits_cache_state(self) -> None:
+        """Sets up the caches of the device-limit custom fields (WT-2005).
+
+        Its own method for the same reason as _init_call_queue_state: tests that
+        bypass __init__ still get the real attributes.
+        """
+        # i_account / i_customer -> (monotonic ts, (max_devices, max_device_switches)).
+        # Kept apart because one customer read serves every account of that customer.
+        self._account_limits_cache: Dict[int, tuple] = {}
+        self._customer_limits_cache: Dict[int, tuple] = {}
 
     async def _notification_email(self) -> Optional[str]:
         """Returns the email OTP codes are sent from, or None if it cannot be read.
@@ -433,20 +454,15 @@ class PortaSwitchAdapter(BSSAdapter):
             if self._portaswitch_settings.ALLOWED_ADDONS:
                 self._check_allowed_addons(account_info)
 
-            if await self._is_portaswitch_version_with_token():
-                token = await self._get_or_create_api_token(account_info)
-                if token:
-                    session_data = await self._account_api.login(account_info["login"], token=token)
-                else:
-                    session_data = await self._account_api.login(account_info["login"], account_info["password"])
-            else:
-                session_data = await self._account_api.login(account_info["login"], account_info["password"], token=account_info["password"])
+            device_limits = await self._read_device_limits(account_info)
+            session_data = await self._login_account(account_info)
 
             return SessionInfo(
                 user_id=UserId(str(account_info["i_account"])),
                 access_token=AccessToken(session_data["access_token"]),
                 refresh_token=session_data["refresh_token"],
                 expires_at=datetime.now() + timedelta(seconds=session_data["expires_in"]),
+                **device_limits,
             )
 
         except WebTritErrorException as error:
@@ -557,13 +573,21 @@ class PortaSwitchAdapter(BSSAdapter):
             await asyncio.to_thread(self._otp_storage.delete, otp_id)
 
             i_account = str(i_account)
-            session_data = await self._emulate_account_login(i_account)
+            # The account record is read here rather than inside _emulate_account_login,
+            # so the device limits reuse it instead of paying for a second lookup.
+            account_info = (await self._admin_api.get_account_info(i_account=i_account)).get("account_info")
+            if not account_info:
+                raise not_found_user_error(i_account)
+
+            device_limits = await self._read_device_limits(account_info)
+            session_data = await self._login_account(account_info)
 
             return SessionInfo(
                 user_id=UserId(i_account),
                 access_token=session_data["access_token"],
                 refresh_token=session_data["refresh_token"],
                 expires_at=datetime.now() + timedelta(seconds=session_data["expires_in"]),
+                **device_limits,
             )
 
         except WebTritErrorException as error:
@@ -2015,11 +2039,13 @@ class PortaSwitchAdapter(BSSAdapter):
 
         try:
             account_info = (await self._account_api.get_account_info(access_token=access_token))["account_info"]
+            device_limits = await self._read_device_limits(account_info)
 
             return SessionResponse(
                 user_id=UserId(str(account_info["i_account"])),
                 access_token=AccessToken(access_token),
                 refresh_token=refresh_token,
+                **device_limits,
             )
         except WebTritErrorException as error:
             if extract_fault_code(error) == "Client.Session.check_auth.failed_to_process_access_token":
@@ -2408,6 +2434,129 @@ class PortaSwitchAdapter(BSSAdapter):
 
     # endregion
 
+    async def _read_device_limits(self, account_info: dict) -> dict:
+        """Read the device and session limits Core enforces for this account (WT-2005).
+
+        The limits are PortaBilling custom fields of the master account and of its
+        customer. An account field missing or blank falls back to the configured default;
+        a customer field has no default and stays None. None means "no limit", and so does
+        0, whether it comes from a field or from a default.
+
+        A read that fails never blocks the sign-in: its fields count as unset, with a
+        warning, while whatever the other read returned is still used.
+
+        Parameters:
+            account_info (dict): The account record the user signs in with. An alias row
+                carries no custom fields of its own, so it is resolved to its master first.
+
+        Returns:
+            dict: customer_id and the four limit fields, ready to spread into SessionInfo.
+        """
+        settings = self._portaswitch_settings
+        i_customer = account_info.get("i_customer")
+        account_limits, customer_limits = (None, None), (None, None)
+
+        try:
+            if master_id := account_info.get("i_master_account"):
+                master_info = (await self._admin_api.get_account_info(i_account=master_id))["account_info"]
+                i_customer = master_info["i_customer"]
+                account_info = master_info
+        except Exception as e:
+            logging.warning(f"Device limits unavailable for i_account={account_info.get('i_account')}: "
+                            f"cannot resolve its master account, using the defaults: {e}")
+        else:
+            account_read, customer_read = await asyncio.gather(
+                self._cached_field_limits(
+                    self._account_limits_cache, account_info["i_account"],
+                    self._admin_api.get_account_custom_fields_values,
+                ),
+                self._cached_field_limits(
+                    self._customer_limits_cache, i_customer,
+                    self._admin_api.get_customer_custom_fields_values,
+                ),
+                return_exceptions=True,
+            )
+            if isinstance(account_read, Exception):
+                logging.warning(f"Cannot read the custom fields of i_account={account_info['i_account']}, "
+                                f"using the default device limits: {account_read}")
+            else:
+                account_limits = account_read
+            if isinstance(customer_read, Exception):
+                logging.warning(f"Cannot read the custom fields of i_customer={i_customer}, "
+                                f"signing in without customer device limits: {customer_read}")
+            else:
+                customer_limits = customer_read
+
+        account_max_devices, account_max_device_switches = account_limits
+        customer_max_devices, customer_max_device_switches = customer_limits
+
+        # 0 means "no limit", like an unset value - but an account's own 0 still wins over
+        # the default, so the fallback is decided before 0 is turned into None.
+        return dict(
+            customer_id=str(i_customer) if i_customer is not None else None,
+            account_max_devices=(
+                account_max_devices if account_max_devices is not None else settings.DEFAULT_ACCOUNT_MAX_DEVICES
+            ) or None,
+            customer_max_devices=customer_max_devices or None,
+            account_max_device_switches=(
+                account_max_device_switches if account_max_device_switches is not None
+                else settings.DEFAULT_ACCOUNT_MAX_DEVICE_SWITCHES
+            ) or None,
+            customer_max_device_switches=customer_max_device_switches or None,
+        )
+
+    async def _cached_field_limits(self, cache: dict, key: int, read: Callable) -> tuple:
+        """Returns (max_devices, max_device_switches) parsed from one custom-fields read.
+
+        Served from `cache` within DEVICE_LIMITS_CACHE_TTL. A failed read raises
+        and is not cached, so the next sign-in tries again. Concurrent cold misses may
+        each read the switch once; nothing awaits between the lookup and the store, so
+        the cache itself stays consistent.
+        """
+        ttl = self._portaswitch_settings.DEVICE_LIMITS_CACHE_TTL
+        if ttl:
+            entry = cache.get(key)
+            if entry and time.monotonic() - entry[0] < ttl:
+                return entry[1]
+
+        values = self._custom_field_values(await read(key))
+        limits = (
+            self._parse_device_limit(values, MAX_DEVICES_CUSTOM_FIELD),
+            self._parse_device_limit(values, MAX_DEVICE_SWITCHES_CUSTOM_FIELD),
+        )
+
+        if ttl:
+            # Re-inserting keeps the dict in store order, so the first key is the stalest.
+            cache.pop(key, None)
+            cache[key] = (time.monotonic(), limits)
+            while len(cache) > DEVICE_LIMITS_CACHE_MAX:
+                cache.pop(next(iter(cache)))
+        return limits
+
+    @staticmethod
+    def _custom_field_values(response: dict) -> dict:
+        """Map name -> db_value out of a get_custom_fields_values response."""
+        return {
+            field["name"]: field.get("db_value")
+            for field in (response or {}).get("custom_fields_values") or []
+            if field.get("name")
+        }
+
+    @staticmethod
+    def _parse_device_limit(values: dict, name: str) -> Optional[int]:
+        """Read one limit field: missing or blank is None, and so is garbage, with a warning."""
+        value = values.get(name)
+        if value is None or not str(value).strip():
+            return None
+        try:
+            limit = int(str(value).strip())
+        except ValueError:
+            limit = -1
+        if limit < 0:
+            logging.warning(f"Ignoring custom field {name}={value!r}: not a non-negative integer")
+            return None
+        return limit
+
     def _check_allowed_addons(self, account_info: dict):
         """Verify that the account has at least one of the required add-ons.
 
@@ -2763,7 +2912,10 @@ class PortaSwitchAdapter(BSSAdapter):
     async def _emulate_account_login(self, i_account: str) -> dict:
         """Emulate a login for a PortaSwitch account."""
         account_info = (await self._admin_api.get_account_info(i_account=i_account)).get("account_info")
+        return await self._login_account(account_info)
 
+    async def _login_account(self, account_info: dict) -> dict:
+        """Open an account realm session for an already read account record."""
         if await self._is_portaswitch_version_with_token():
             token = await self._get_or_create_api_token(account_info)
             if token:
