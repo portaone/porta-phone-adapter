@@ -158,6 +158,9 @@ variables without a default are mandatory — the adapter does not start without
 | `PORTASWITCH_HIDE_BALANCE_IN_USER_INFO` | no | `false` | Leave the balance out of the user info |
 | `PORTASWITCH_SELF_CONFIG_PORTAL_URL` | no | unset | When set, `POST /custom/private/custom-pages` offers a "Self-config Portal" page at this URL with `?token=<access token>` appended. Needs `CAPABILITIES_CUSTOM_METHODS` |
 | `PORTASWITCH_ALLOWED_ADDONS` | no | empty — no restriction | See [Add-on restricted sign-in](#add-on-restricted-sign-in-portaswitch) |
+| `PORTASWITCH_DEFAULT_ACCOUNT_MAX_DEVICES` | no | unset — no limit | See [Device and session limits](#device-and-session-limits-portaswitch) |
+| `PORTASWITCH_DEFAULT_ACCOUNT_MAX_DEVICE_SWITCHES` | no | unset — no limit | See [Device and session limits](#device-and-session-limits-portaswitch) |
+| `PORTASWITCH_DEVICE_LIMITS_CACHE_TTL` | no | `60` | See [Device and session limits](#device-and-session-limits-portaswitch) |
 | `OTP_IGNORE_ACCOUNTS` | no | empty | Sign-in identifiers whose OTP is accepted even when PortaBilling rejects the code — test and review accounts only |
 | `OTP_STORAGE_COLLECTION` | no | unset — process memory | Firestore collection that keeps pending OTPs. Unset, they live in the process's memory, which breaks OTP sign-in when more than one instance serves requests |
 | `OTP_STORAGE_TTL_MINUTES` | no | `30` | Firestore only: the `expires_at` written on each pending OTP. Cleanup needs a Firestore TTL policy on that field |
@@ -293,3 +296,29 @@ be (WT-1926).
 
 The gate is a sign-in check only — an established session outlives the removal of the
 add-on until its token expires.
+
+## Device and session limits (PortaSwitch)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORTASWITCH_DEFAULT_ACCOUNT_MAX_DEVICES` | unset — no limit | Devices an account may have signed in at once, when its `portaphone_max_devices` custom field is not set. `0` means no limit |
+| `PORTASWITCH_DEFAULT_ACCOUNT_MAX_DEVICE_SWITCHES` | unset — no limit | The same for `portaphone_max_device_switches` |
+| `PORTASWITCH_DEVICE_LIMITS_CACHE_TTL` | `60` | Seconds to reuse the custom fields read for an account, and separately for a customer, before reading them again. `0` reads them on every sign-in; a blank value means the default |
+
+Every sign-in that returns a session — login/password, OTP and sign-up, not a session
+refresh — adds `customer_id` (the account's `i_customer`) and four limits that Core
+enforces: `account_max_devices`, `account_max_device_switches`, `customer_max_devices`
+and `customer_max_device_switches` (WT-2005). They are read from the PortaBilling custom
+fields `portaphone_max_devices` and `portaphone_max_device_switches` of the **master**
+account and of its customer. An account field that is missing or blank falls back to the
+default above; a customer field has no default. `null` means no limit, and so does `0`,
+whether set on the account, the customer or as a default (an account's own `0` still
+overrides the default). A value that is not
+a non-negative whole number is ignored with a warning; a default that is not one stops
+the adapter from starting.
+
+A failed read never blocks the sign-in. It is logged as a warning and its fields count as
+unset — the account limits take the defaults above, the customer limits stay `null` —
+while whatever the other read returned is still used. A failed read is not cached.
+
+A limit changed in PortaBilling takes effect within `PORTASWITCH_DEVICE_LIMITS_CACHE_TTL`.

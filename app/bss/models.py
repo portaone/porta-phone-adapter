@@ -773,6 +773,14 @@ class SessionResponse(BaseModel):
     access_token: AccessToken
     refresh_token: Optional[RefreshToken] = None
     user_id: UserId
+    # adding this manually
+    # Device and session limits Core enforces for the signed-in user (WT-2005). Set
+    # only on sign-in; None means "no limit" (the adapter reports a 0 as None too).
+    customer_id: Optional[str] = None
+    account_max_devices: Optional[int] = None
+    customer_max_devices: Optional[int] = None
+    account_max_device_switches: Optional[int] = None
+    customer_max_device_switches: Optional[int] = None
 
 
 class UserContactIndexResponse(BaseModel):
