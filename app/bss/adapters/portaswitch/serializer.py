@@ -530,12 +530,19 @@ class Serializer:
             direction: Call direction (incoming, outgoing, forwarded, unknown)
         
         Returns: 'accepted', 'declined', 'missed', 'failed', 'completed_elsewhere', or 'error'
+
+        PortaSwitch maps the callee's SIP response to a Q.850 cause (RFC 3398):
+        486/600 Busy -> 17, 480 Temporarily unavailable -> 18, 603 Decline -> 21 (WT-1965).
+        Cause 21 also stands for 401/402/403, which a network or billing answers the
+        caller with, so it means "the callee declined" only on an incoming call.
         """
         if failed and direction == Direction.outgoing and disconnect_cause == 1:
             return ConnectStatus.failed
-        if failed and disconnect_cause == 16:
+        if failed and disconnect_cause in (16, 17):
             return ConnectStatus.declined
-        elif failed and disconnect_cause == 19:
+        elif failed and disconnect_cause == 21 and direction == Direction.incoming:
+            return ConnectStatus.declined
+        elif failed and disconnect_cause in (18, 19):
             return ConnectStatus.missed
         elif failed and disconnect_cause == 13:
             return ConnectStatus.completed_elsewhere
