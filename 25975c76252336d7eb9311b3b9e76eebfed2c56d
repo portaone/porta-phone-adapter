@@ -16,6 +16,24 @@
       "message": "This rewrites the whole file: line endings change from CRLF to LF, so the diff shows +2074/-1194 when only 8 lines actually change. That breaks git blame and will cause conflicts when anything touching models.py is cherry-picked to release/*. Please keep CRLF and touch only the SessionResponse hunk; a line-ending change belongs in its own commit if it\u0027s wanted.",
       "revId": "25975c76252336d7eb9311b3b9e76eebfed2c56d",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "9f1a8984_92a0db24",
+        "filename": "app/bss/models.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 1,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-10-09T08:25:36Z",
+      "side": 1,
+      "message": "Marked as unresolved.",
+      "parentUuid": "f622b0fc_3b1f0e3e",
+      "revId": "25975c76252336d7eb9311b3b9e76eebfed2c56d",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     }
   ]
 }
