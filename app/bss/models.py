@@ -581,6 +581,19 @@ class CallRecordingId(RootModel[str]):
     """A unique identifier for a call recording, used to reference the recorded media of a specific call."""
 
 
+class RecordingLinkResponse(BaseModel):
+    link_id: str = Field(
+        ...,
+        description="Opens the recording, and its transcription, with no session. "
+                    "Pass it to `GET /public/recordings/{link_id}` and `.../transcription`.",
+    )
+    transcription: bool = Field(
+        ...,
+        description="Whether the transcription is reachable through the link. False when transcription "
+                    "is switched off, or for a call the billing has no transcription key for.",
+    )
+
+
 class TranscriptionFormat(Enum):
     """The shape a call transcription is asked for in."""
 

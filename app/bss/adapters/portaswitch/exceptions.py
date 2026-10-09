@@ -116,3 +116,23 @@ def unsupported_file_format_error():
 
 def voicemail_not_configured():
     return WebTritErrorException(422, "Voicemail is not configured", "voicemail_not_configured")
+
+
+def recording_links_not_configured_error():
+    return WebTritErrorException(
+        501, "Public recording links need SECRET_KEY_BASE to be set", "recording_links_not_configured"
+    )
+
+
+def not_found_recording_link_error():
+    return WebTritErrorException(404, "There is no a recording behind this link", "recording_link_not_found")
+
+
+def expired_recording_link_error():
+    return WebTritErrorException(410, "The recording link has expired", "recording_link_expired")
+
+
+def not_found_linked_transcription_error():
+    return WebTritErrorException(
+        404, "The recording behind this link has no transcription (yet)", "transcription_not_found"
+    )

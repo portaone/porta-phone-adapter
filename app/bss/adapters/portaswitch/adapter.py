@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, UTC
 from typing import AsyncIterator, Awaitable, Callable, Final, Optional, Dict, List, Union
 
 import urllib3
+from urllib.parse import urlsplit
 from jose.exceptions import ExpiredSignatureError, JWTError
 
 from app_config import AppConfig
@@ -72,7 +73,12 @@ from .exceptions import (
     voicemail_not_configured,
     not_found_call_queue_error,
     not_found_voicemail_message_error,
+    recording_links_not_configured_error,
+    not_found_recording_link_error,
+    expired_recording_link_error,
+    not_found_linked_transcription_error,
 )
+from .recording_link import RecordingLinkExpired, RecordingLinkInvalid, RecordingLinkSigner
 from .serializer import Serializer
 from .types import (
     PortaSwitchSignInCredentialsType,
@@ -324,6 +330,15 @@ class PortaSwitchAdapter(BSSAdapter):
             )
 
         self._admin_api = AdminAPI(self._portaswitch_settings, site_state=site_state)
+        self._recording_link_signer = (
+            RecordingLinkSigner(
+                self._settings.SECRET_KEY_BASE,
+                # The host alone: a trailing slash or a scheme change must not void links.
+                (urlsplit(self._portaswitch_settings.ADMIN_API_URL).hostname or "").lower(),
+            )
+            if self._settings.SECRET_KEY_BASE
+            else None
+        )
         self._account_api = AccountAPI(self._portaswitch_settings, site_state=site_state)
 
         if site_state is not None:
@@ -1776,6 +1791,132 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise forbidden_recording_error(recording_id)
 
             raise error
+
+    async def issue_recording_link(
+        self, session: SessionInfo, call_recording: CallRecordingId, ttl: Optional[int] = None
+    ) -> tuple[str, bool]:
+        """Returns a link_id that opens the recording, and its transcript, with no session (WT-1993),
+        and whether the transcript is reachable through it.
+
+        The link is served with the admin token, which can read any account's calls, so
+        it is issued only for the caller's own: each half of the recording_id is first
+        requested with the caller's own token, and PortaBilling refuses another
+        account's call. The recording exists by now - the call history shows a
+        recording_id only for a call that has one - while the transcript may still be
+        on its way, and the link starts serving it once it is ready.
+
+        Raises:
+            WebTritErrorException: 403 for another account's call, 404 for a recording
+                PortaBilling cannot find, 501 without SECRET_KEY_BASE.
+        """
+        if self._recording_link_signer is None:
+            raise recording_links_not_configured_error()
+
+        recording_id = safely_extract_scalar_value(call_recording)
+        try:
+            i_xdr, call_recording_id = Serializer.parse_recording_id(recording_id)
+        except ValueError:
+            raise invalid_recording_id_error(recording_id)
+
+        await self._discard(await self.retrieve_call_recording(session, call_recording))
+
+        if call_recording_id and Capabilities.transcription in self.get_capabilities():
+            call_recording_id = await self._own_call_recording_id(session, recording_id, call_recording_id)
+        else:
+            call_recording_id = None
+
+        link_id = self._recording_link_signer.sign(int(i_xdr), call_recording_id, ttl)
+        return link_id, call_recording_id is not None
+
+    async def _own_call_recording_id(
+        self, session: SessionInfo, recording_id: str, call_recording_id: str
+    ) -> Optional[str]:
+        """The transcript key, if it may go into a link; None if it may not.
+
+        Checked on its own, because nothing ties it to the i_xdr checked before it: the
+        id can glue the caller's own xDR to another call's key. Only the two answers that
+        speak about this very transcript keep it - there is one, or there is none yet -
+        and only "forbidden" is an error; any other not-found drops the key, leaving a
+        link to the audio alone.
+        """
+        try:
+            await self._discard(
+                await self._account_api.get_call_transcription(
+                    call_recording_id=call_recording_id,
+                    access_token=safely_extract_scalar_value(session.access_token),
+                    check_only=True,
+                )
+            )
+            return call_recording_id
+        except WebTritErrorException as error:
+            fault_code = extract_fault_code(error)
+            if fault_code in ("Client.Session.check_auth.failed_to_process_access_token",):
+                raise access_token_expired_error()
+            if fault_code in ("Server.CDR.forbidden_account_access",):
+                raise forbidden_recording_error(recording_id)
+            if fault_code in ("Server.CDR.transcription_not_found",):
+                return call_recording_id
+            if fault_code in ("Server.CDR.xdr_not_found", "Server.CDR.invalid_call_recording_id"):
+                return None
+            raise
+
+    async def retrieve_linked_call_recording(self, link_id: str) -> tuple[str, AsyncIterator]:
+        """Returns the recording behind a public link, fetched with the admin token (WT-1993)."""
+        link = self._verify_recording_link(link_id)
+
+        try:
+            result = await self._admin_api.get_call_recording(link.i_xdr)
+        except WebTritErrorException as error:
+            if extract_fault_code(error) in ("Server.CDR.xdr_not_found", "Server.CDR.invalid_call_recording_id"):
+                raise not_found_recording_link_error()
+            raise
+
+        if not isinstance(result, tuple):
+            raise not_found_recording_link_error()
+        return result
+
+    async def retrieve_linked_call_transcription(
+        self, link_id: str, format: Optional[str] = None, check_only: bool = False
+    ) -> Union[dict, tuple[str, AsyncIterator]]:
+        """Returns the transcript behind a public link, fetched with the admin token (WT-1993)."""
+        link = self._verify_recording_link(link_id)
+        # The link is good, the transcript is what is missing - not yet produced, or
+        # never will be - and a CRM polling for it has to tell that from a dead link.
+        if not link.call_recording_id:
+            raise not_found_linked_transcription_error()
+
+        try:
+            return await self._admin_api.get_call_transcription(link.call_recording_id, format, check_only)
+        except WebTritErrorException as error:
+            fault_code = extract_fault_code(error)
+            if fault_code in ("Server.CDR.xdr_not_found",):
+                raise not_found_recording_link_error()
+            if fault_code in ("Server.CDR.invalid_call_recording_id", "Server.CDR.transcription_not_found"):
+                raise not_found_linked_transcription_error()
+            raise
+
+    def _verify_recording_link(self, link_id: str):
+        if self._recording_link_signer is None:
+            raise recording_links_not_configured_error()
+        try:
+            return self._recording_link_signer.verify(link_id)
+        except RecordingLinkInvalid:
+            raise not_found_recording_link_error()
+        except RecordingLinkExpired:
+            raise expired_recording_link_error()
+
+    @staticmethod
+    async def _discard(result) -> None:
+        """Releases a streamed answer nobody is going to read."""
+        if isinstance(result, tuple):
+            iterator = result[1]
+            # Started first: closing a generator that never ran skips its finally,
+            # which is what releases the connection.
+            try:
+                await iterator.__anext__()
+            except StopAsyncIteration:
+                return
+            await iterator.aclose()
 
     async def retrieve_voicemails(
         self,

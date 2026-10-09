@@ -315,6 +315,9 @@ class OTPSettings(BaseSettings):
 class Settings(BaseSettings):
     JANUS_SIP_FORCE_TCP: bool = False
     ENABLE_ON_DEMAND_SESSION_MIGRATION: bool = False
+    # Keys the HMAC of public recording links (WT-1993). Changing it voids every link
+    # already handed out; without it no link can be issued.
+    SECRET_KEY_BASE: Optional[str] = None
 
     PORTASWITCH_SETTINGS: PortaSwitchSettings = PortaSwitchSettings()
     OTP_SETTINGS: OTPSettings = OTPSettings()

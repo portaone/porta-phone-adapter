@@ -1,19 +1,23 @@
 import logging
-from typing import Optional
+from typing import AsyncIterator, Optional, Union
 
 from bss.adapters.portaswitch.config import PortaSwitchSettings
 from bss.adapters.portaswitch.exceptions import service_read_only_error
 from bss.adapters.portaswitch.failover import READ_ONLY_FAULTS, SESSION_AUTH_FAULTS
 from bss.adapters.portaswitch.types import PortaSwitchAdminUser
 from bss.adapters.portaswitch.utils import extract_fault_code
+from bss.adapters.portaswitch.api.media import MediaResponseMixin
 from bss.async_http_api import AsyncHTTPAPIConnector, AsyncHTTPAPIConnectorWithLogin, OAuthSessionData
 from bss.models import DeliveryChannel
 from report_error import WebTritErrorException
 from request_trace import sanitize_data
 
 
-class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
+class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
     """Provides an access to Admin realm of the PortaSwitch API (async, WT-1720)."""
+
+    # The only admin methods that answer with a file; every other one is JSON.
+    MEDIA_PATHS = ("/CDR/get_call_recording", "/CDR/get_transcription")
 
     # Disable proactive token refresh: PortaSwitch may issue tokens with a TTL
     # equal to the default 15-minute threshold, turning every admin call into a
@@ -466,7 +470,35 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
         except WebTritErrorException:
             return None
 
-    async def _send_request(self, module: str, method: str, params: dict, turn_off_login: bool = False):
+    async def get_call_recording(self, i_xdr: int) -> Union[dict, tuple[str, AsyncIterator[bytes]]]:
+        """Returns the call recording file of any account's call, by its xDR (WT-1993)."""
+        return await self._send_request(
+            module="CDR", method="get_call_recording", params={"i_xdr": i_xdr}, stream=True
+        )
+
+    async def get_call_transcription(
+        self, call_recording_id: str, format: Optional[str] = None, check_only: bool = False
+    ) -> Union[dict, tuple[str, AsyncIterator[bytes]]]:
+        """Returns the transcription of any account's recorded call (WT-1993).
+
+        Same parameters and answers as AccountAPI.get_call_transcription.
+        """
+        params = {"call_recording_id": call_recording_id}
+        if format:
+            params["format"] = format
+        if check_only:
+            params["check_only"] = 1
+
+        return await self._send_request(module="CDR", method="get_transcription", params=params, stream=True)
+
+    async def decode_response(self, response):
+        if response.request.url.path.endswith(self.MEDIA_PATHS):
+            return await super().decode_response(response)
+        return response.json()
+
+    async def _send_request(
+        self, module: str, method: str, params: dict, turn_off_login: bool = False, stream: bool = False
+    ):
         """Sends the Porta-Billing API method by means of HTTP POST request.
 
         Parameters:
@@ -488,6 +520,7 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
                 json={"params": params},
                 turn_off_login=turn_off_login,
                 user=self._api_user,
+                stream=stream,
             )
         except WebTritErrorException as error:
             fault_code = extract_fault_code(error)
@@ -501,6 +534,7 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
                     json={"params": params},
                     turn_off_login=turn_off_login,
                     user=self._api_user,
+                    stream=stream,
                 )
             elif fault_code in READ_ONLY_FAULTS:
                 # The (secondary/standalone) site cannot service this write/update

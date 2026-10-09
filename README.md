@@ -238,6 +238,30 @@ an id that works.
 An id of another account's call answers `403 forbidden_account_access` on both the
 download and the transcript (WT-2046), so a client polling for a transcript stops.
 
+## Public recording links (PortaSwitch)
+
+For a CRM that saves a call's recording and transcript as links in a ticket, opened by
+anyone who can see the ticket, with no WebTrit session (WT-1993).
+
+- `GET /user/recordings/{recording_id}/link?ttl=<seconds>` (the agent's session) returns
+  `{"link_id": "...", "transcription": true}`. Without `ttl` the link never expires; at
+  most ten years. The adapter first asks PortaBilling for both halves of the recording
+  with the agent's own token, so another account's `recording_id` answers `403`. A
+  transcript key PortaBilling does not recognise is left out of the link
+  (`"transcription": false`) rather than trusted.
+- `GET /public/recordings/{link_id}` and `GET /public/recordings/{link_id}/transcription`
+  (no session; `format` and `check_only` as above) are served with the **admin** token,
+  so they keep working after the agent signs out. An unknown or altered link, or a
+  recording deleted in PortaBilling since, answers `404 recording_link_not_found`; a
+  transcript not produced (yet) `404 transcription_not_found`; an expired link `410`.
+
+`link_id` is the recording's `i_xdr` and `call_recording_id` plus the expiry, signed with
+an HMAC keyed by **`SECRET_KEY_BASE`** and the host of `PORTASWITCH_ADMIN_API_URL`,
+and about 90 characters long. Nothing is stored: a single link cannot be revoked, and
+changing either voids every link already handed out — keep it stable across upgrades and identical on every replica. Without it
+these endpoints answer `501`. Needs `CAPABILITIES_RECORDINGS` (and
+`CAPABILITIES_TRANSCRIPTION` for the transcript).
+
 ## Call history date range (PortaSwitch)
 
 `GET /user/history` takes optional `time_from` / `time_to` query parameters and forwards

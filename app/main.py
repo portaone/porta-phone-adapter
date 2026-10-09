@@ -21,6 +21,7 @@ from bss.types import (
     BinaryResponse,
     CallRecordingId,
     TranscriptionFormat,
+    RecordingLinkResponse,
     CreateSessionInternalServerErrorErrorResponse,
     CreateSessionOtpInternalServerErrorErrorResponse,
     CreateSessionOtpNotFoundErrorResponse,
@@ -918,6 +919,141 @@ async def get_user_recording_transcription(
         bss.retrieve_call_transcription,
         session,
         CallRecordingId(recording_id),
+        format.value if format else None,
+        bool(check_only),
+    )
+
+    if isinstance(result, tuple):
+        content_type, content_iterator = result
+        return StreamingResponse(
+            content_iterator, media_type=content_type if content_type else "application/octet-stream"
+        )
+
+    return JSONResponse(content=result)
+
+
+@router.get(
+    '/user/recordings/{recording_id}/link',
+    response_model=RecordingLinkResponse,
+    responses={
+        '401': {'model': GetUserRecordingUnauthorizedErrorResponse},
+        '403': {'model': GetUserRecordingForbiddenErrorResponse},
+        '404': {'model': GetUserRecordingNotFoundErrorResponse},
+        '422': {'model': GetUserRecordingUnprocessableEntityErrorResponse},
+        '500': {'model': GetUserRecordingInternalServerErrorErrorResponse},
+    },
+    tags=['user'],
+)
+async def get_user_recording_link(
+        recording_id: str,
+        ttl: Optional[conint(ge=1, le=10 * 365 * 24 * 3600)] = Query(
+            default=None,
+            description='Seconds the link stays valid, up to ten years. Without it the link never expires.',
+        ),
+        auth_data: HTTPAuthorizationCredentials = Depends(security),
+        _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
+) -> Union[
+    RecordingLinkResponse,
+    GetUserRecordingUnauthorizedErrorResponse,
+    GetUserRecordingForbiddenErrorResponse,
+    GetUserRecordingNotFoundErrorResponse,
+    GetUserRecordingUnprocessableEntityErrorResponse,
+    GetUserRecordingInternalServerErrorErrorResponse,
+]:
+    """
+    Issue a `link_id` that opens the recording, and its transcription, with no session (WT-1993).
+
+    For a CRM that saves the link in a ticket, where anyone who can open the ticket
+    follows it - long after the agent has signed out. Issued only for the caller's own
+    call: another account's `recording_id` answers `403`.
+    """
+    global bss, bss_capabilities
+
+    is_method_allowed(Capabilities.recordings)
+
+    session = await call_bss(bss.validate_session, auth_data.credentials)
+    link_id, transcription = await call_bss(
+        bss.issue_recording_link, session, CallRecordingId(recording_id), ttl
+    )
+
+    return RecordingLinkResponse(link_id=link_id, transcription=transcription)
+
+
+@router.get(
+    '/public/recordings/{link_id}',
+    # Prevent FastAPI to validate the response as JSON (default response class).
+    response_class=Response,
+    responses={
+        '404': {'model': GetUserRecordingNotFoundErrorResponse},
+        '410': {'model': GetUserRecordingNotFoundErrorResponse},
+        '500': {'model': GetUserRecordingInternalServerErrorErrorResponse},
+    },
+    tags=['public'],
+)
+async def get_public_recording(
+        link_id: str,
+        _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
+) -> Union[
+    BinaryResponse,
+    GetUserRecordingNotFoundErrorResponse,
+    GetUserRecordingInternalServerErrorErrorResponse,
+]:
+    """
+    Return the recording behind a `link_id` from `GET /user/recordings/{recording_id}/link`.
+
+    No session: the link is the credential. A link this adapter did not issue, or
+    a recording deleted since, answers `404`; an expired link answers `410`.
+    """
+    global bss, bss_capabilities
+
+    is_method_allowed(Capabilities.recordings)
+
+    content_type, content_iterator = await call_bss(bss.retrieve_linked_call_recording, link_id)
+
+    return StreamingResponse(content_iterator, media_type=content_type if content_type else "application/octet-stream")
+
+
+@router.get(
+    '/public/recordings/{link_id}/transcription',
+    # Prevent FastAPI to validate the response as JSON (default response class).
+    response_class=Response,
+    responses={
+        '404': {'model': GetUserRecordingTranscriptionNotFoundErrorResponse},
+        '410': {'model': GetUserRecordingTranscriptionNotFoundErrorResponse},
+        '500': {'model': GetUserRecordingTranscriptionInternalServerErrorErrorResponse},
+    },
+    tags=['public'],
+)
+async def get_public_recording_transcription(
+        link_id: str,
+        format: Optional[TranscriptionFormat] = Query(
+            default=None,
+            description='`json` for the structured transcription with timestamps, `text` for the '
+                        'transcribed text only. The **Adaptee** decides the default (`json`).',
+        ),
+        check_only: Optional[bool] = Query(
+            default=None,
+            description='Only report whether a transcription exists, without returning it.',
+        ),
+        _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
+) -> Union[
+    GetUserRecordingTranscriptionNotFoundErrorResponse,
+    GetUserRecordingTranscriptionInternalServerErrorErrorResponse,
+]:
+    """
+    Return the transcription behind a `link_id` from `GET /user/recordings/{recording_id}/link`.
+
+    No session: the link is the credential. Answers as
+    `GET /user/recordings/{recording_id}/transcription` does; a call not transcribed
+    (yet) answers `404`, an expired link `410`.
+    """
+    global bss, bss_capabilities
+
+    is_method_allowed(Capabilities.transcription)
+
+    result = await call_bss(
+        bss.retrieve_linked_call_transcription,
+        link_id,
         format.value if format else None,
         bool(check_only),
     )

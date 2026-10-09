@@ -356,6 +356,26 @@ class BSSAdapter(SessionManagement, OTPHandler,
         """Get the speech-to-text transcription of a previously recorded call."""
         raise NotImplementedError("Override this method in your sub-class")
 
+    # Public recording links (WT-1993). Not abstract, and answering 501 rather than
+    # raising NotImplementedError: an adapter with recordings but without links must
+    # say so to the client instead of failing with a 500.
+    def issue_recording_link(
+            self, session: SessionInfo, recording_id: str, ttl: Optional[int] = None
+    ) -> Tuple[str, bool]:
+        """Get a link_id that opens the recording with no session, and whether the
+        transcript is reachable through it too."""
+        raise_webtrit_error(501, f"Public recording links are not supported by adapter {self.name()}")
+
+    def retrieve_linked_call_recording(self, link_id: str) -> tuple[str, Iterator]:
+        """Get the media file behind a public recording link."""
+        raise_webtrit_error(501, f"Public recording links are not supported by adapter {self.name()}")
+
+    def retrieve_linked_call_transcription(
+            self, link_id: str, format: Optional[str] = None, check_only: bool = False
+    ):
+        """Get the transcription behind a public recording link."""
+        raise_webtrit_error(501, f"Public recording links are not supported by adapter {self.name()}")
+
     @abstractmethod
     def signup(self, user_data, tenant_id: str = None) -> UserCreateResponse:
         """Create a new user as a part of the sign-up process"""
