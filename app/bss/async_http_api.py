@@ -490,7 +490,8 @@ class AsyncHTTPAPIConnectorWithLogin(AsyncHTTPAPIConnector):
                                 query_params=None,
                                 headers={'Content-Type': 'application/json'},
                                 turn_off_login=False,
-                                user: APIUser = None) -> dict:
+                                user: APIUser = None,
+                                stream=None) -> dict:
         auth_session = self.get_auth_session(user)
         if not turn_off_login:
             if not self._valid_session(auth_session):
@@ -516,6 +517,7 @@ class AsyncHTTPAPIConnectorWithLogin(AsyncHTTPAPIConnector):
 
         return await super().send_rest_request(method, path, server,
                                                data, json, query_params,
+                                               stream=stream,
                                                headers=headers,
                                                auth_session=auth_session)
 

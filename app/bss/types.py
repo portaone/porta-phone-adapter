@@ -49,6 +49,7 @@ from bss.models import (
     Pagination as Pagination,
     CallRecordingId as CallRecordingId,
     TranscriptionFormat as TranscriptionFormat,
+    RecordingLinkResponse as RecordingLinkResponse,
 
     # error responses & codes
     CreateSessionOtpInternalServerErrorErrorResponse as CreateSessionOtpInternalServerErrorErrorResponse,
