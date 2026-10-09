@@ -375,6 +375,38 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
             },
         )
 
+    async def get_account_custom_fields_values(self, i_account: int) -> dict:
+        """Returns the custom fields values of the given account.
+
+        Parameters:
+            i_account (int): The internal PortaSwitch account identifier.
+
+        Returns:
+            dict: The API method execution result that contains custom_fields_values,
+                a list of {name, db_value, ...} records.
+        """
+        return await self._send_request(
+            module="Account",
+            method="get_custom_fields_values",
+            params={"i_account": i_account},
+        )
+
+    async def get_customer_custom_fields_values(self, i_customer: int) -> dict:
+        """Returns the custom fields values of the given customer.
+
+        Parameters:
+            i_customer (int): The identifier of the customer.
+
+        Returns:
+            dict: The API method execution result that contains custom_fields_values,
+                a list of {name, db_value, ...} records.
+        """
+        return await self._send_request(
+            module="Customer",
+            method="get_custom_fields_values",
+            params={"i_customer": i_customer},
+        )
+
     async def get_env_info(self) -> dict:
         """Returns PortaSwitch environment info.
         Returns:

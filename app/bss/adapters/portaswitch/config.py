@@ -19,6 +19,9 @@ DEFAULT_CALL_HISTORY_WINDOW_HOURS = 24
 #: refusing to go further - and it keeps the timedelta built from this value nowhere
 #: near the limits of the type.
 CALL_HISTORY_MAX_WINDOW_HOURS = 100 * 365 * 24
+#: Seconds a sign-in reuses the device-limit custom fields read for an account or a
+#: customer (WT-2005).
+DEFAULT_DEVICE_LIMITS_CACHE_TTL = 60
 
 
 def parse_string_list(value: Union[List, str, int, None]) -> List[str]:
@@ -112,6 +115,16 @@ class PortaSwitchSettings(BaseSettings):
     HIDE_BALANCE_IN_USER_INFO: Optional[bool] = False
     SELF_CONFIG_PORTAL_URL: Optional[str] = None
     ALLOWED_ADDONS: Union[List[str], str] = []
+    # Device and session limits handed to Core on every sign-in (WT-2005). The account's
+    # own portaphone_max_devices / portaphone_max_device_switches custom fields win; these
+    # apply when the account has none, or when its fields cannot be read. Unset or 0
+    # means "no limit".
+    DEFAULT_ACCOUNT_MAX_DEVICES: Optional[int] = None
+    DEFAULT_ACCOUNT_MAX_DEVICE_SWITCHES: Optional[int] = None
+    # Seconds to reuse the custom fields read for an account, and separately for a
+    # customer, so a burst of sign-ins does not re-read them every time. A limit changed
+    # in PortaBilling takes effect within this time. 0 reads them on every sign-in.
+    DEVICE_LIMITS_CACHE_TTL: int = DEFAULT_DEVICE_LIMITS_CACHE_TTL
 
     @field_validator("API_TIMEOUT", mode='before')
     @classmethod
@@ -182,6 +195,31 @@ class PortaSwitchSettings(BaseSettings):
         if iv < 0:
             return DEFAULT_CALL_HISTORY_WINDOW_HOURS
         return min(iv, CALL_HISTORY_MAX_WINDOW_HOURS)
+
+    @field_validator("DEFAULT_ACCOUNT_MAX_DEVICES", "DEFAULT_ACCOUNT_MAX_DEVICE_SWITCHES", mode='before')
+    @classmethod
+    def decode_default_device_limit(cls, v: Union[str, int, None]) -> Optional[int]:
+        # The chart renders an unset value as "", which must mean "no limit". Anything
+        # else has to be a whole number: a typo silently read as "no limit" would lift
+        # the very restriction the operator meant to set, so it fails start-up instead.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        iv = int(v)
+        if iv < 0:
+            raise ValueError("a device limit cannot be negative")
+        return iv
+
+    @field_validator("DEVICE_LIMITS_CACHE_TTL", mode='before')
+    @classmethod
+    def decode_device_limits_cache_ttl(cls, v: Union[str, int, None]) -> int:
+        # Blank means the default; 0 is meaningful (no caching), and like the default
+        # limits, anything that is not a non-negative whole number fails start-up.
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_DEVICE_LIMITS_CACHE_TTL
+        iv = int(v)
+        if iv < 0:
+            raise ValueError("the device limits cache TTL cannot be negative")
+        return iv
 
     @field_validator("MAX_CONNECTIONS", mode='before')
     @classmethod
