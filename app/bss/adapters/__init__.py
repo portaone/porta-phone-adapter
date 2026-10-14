@@ -157,6 +157,7 @@ class BSSAdapter(SessionManagement, OTPHandler,
         VOICEMAIL_SAVE=dict(default=True, option=Capabilities.voicemail_save),
         VOICEMAIL_TRASH=dict(default=True, option=Capabilities.voicemail_trash),
         VOICEMAIL_FORWARD=dict(default=True, option=Capabilities.voicemail_forward),
+        SESSION_AUTO_TERMINATE=dict(default=True, option=Capabilities.session_auto_terminate),
     )
     # Capabilities that only mean anything alongside another one. Advertising
     # `voicemailSave` on a deployment whose voicemail screen is switched off would

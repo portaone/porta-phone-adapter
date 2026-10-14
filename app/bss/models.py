@@ -656,6 +656,7 @@ class SupportedEnum(Enum):
     voicemail_save = "voicemailSave"
     voicemail_trash = "voicemailTrash"
     voicemail_forward = "voicemailForward"
+    session_auto_terminate = "sessionAutoTerminate"
     transcription = "transcription"
 
 
@@ -786,6 +787,11 @@ class SessionResponse(BaseModel):
     access_token: AccessToken
     refresh_token: Optional[RefreshToken] = None
     user_id: UserId
+    # adding this manually
+    # Seconds the access token stays valid, as an OAuth token response reports it. Core
+    # refreshes the session in the background ahead of it, so an active session always
+    # carries a usable token (WT-1789). None when the adapter cannot tell.
+    expires_in: Optional[int] = None
     # adding this manually
     # Device and session limits Core enforces for the signed-in user (WT-2005). Set
     # only on sign-in; None means "no limit" (the adapter reports a 0 as None too).
