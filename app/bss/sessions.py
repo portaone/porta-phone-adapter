@@ -113,6 +113,7 @@ class SessionStorage:
             access_token=token,
             refresh_token=self.generate_id(),
             expires_at=expiration,
+            expires_in=self.SESSION_EXPIRATION * 3600,
             document_ttl=expiration + timedelta(minutes=5)
         )
         logging.debug(f"Created new session with token {mask_token(token)} expiring at " +

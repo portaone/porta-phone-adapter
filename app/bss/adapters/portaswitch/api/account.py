@@ -1,8 +1,9 @@
 import logging
+import time
 from datetime import datetime
 from typing import AsyncIterator, List, Optional, Union
 
-from jose import jwt
+from jose import JWTError, jwt
 
 from bss.adapters.portaswitch.config import PortaSwitchSettings
 from bss.adapters.portaswitch.exceptions import access_token_expired_error, service_read_only_error
@@ -485,6 +486,24 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
             params={"message_uids": [message_id]},
             access_token=access_token,
         )
+
+    @classmethod
+    def access_token_expires_in(cls, access_token: str) -> Optional[int]:
+        """Seconds left until the access token's `exp`, or None when it carries none.
+
+        For a token that did not come with PortaBilling's own `expires_in` - one handed
+        over by the client at sign-up (WT-1789). The signature is not checked: the value
+        only tells Core when to refresh.
+        """
+        try:
+            exp = jwt.get_unverified_claims(access_token).get("exp")
+        except JWTError:
+            return None
+
+        if not isinstance(exp, (int, float)):
+            return None
+
+        return max(int(exp - time.time()), 0)
 
     @classmethod
     def decode_and_verify_access_token_expiration(cls, access_token: str) -> dict:

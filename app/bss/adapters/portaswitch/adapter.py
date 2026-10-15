@@ -275,6 +275,9 @@ class PortaSwitchAdapter(BSSAdapter):
         Capabilities.conversation_mute,
         # "My Queues" call center screen (WT-1881).
         Capabilities.call_center,
+        # Letting a user choose how long an unused session of theirs lives is stored and
+        # enforced by Core alone - PortaSwitch knows nothing about it (WT-1789).
+        Capabilities.session_auto_terminate,
         # Keeping a voicemail message is the IMAP \Flagged flag on the mailbox
         # message, so this one is genuinely backed by PortaSwitch (WT-1878).
         Capabilities.voicemail_save,
@@ -477,6 +480,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 access_token=AccessToken(session_data["access_token"]),
                 refresh_token=session_data["refresh_token"],
                 expires_at=datetime.now() + timedelta(seconds=session_data["expires_in"]),
+                expires_in=session_data["expires_in"],
                 **device_limits,
             )
 
@@ -602,6 +606,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 access_token=session_data["access_token"],
                 refresh_token=session_data["refresh_token"],
                 expires_at=datetime.now() + timedelta(seconds=session_data["expires_in"]),
+                expires_in=session_data["expires_in"],
                 **device_limits,
             )
 
@@ -681,6 +686,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 access_token=session_data["access_token"],
                 refresh_token=session_data["refresh_token"],
                 expires_at=datetime.now() + timedelta(seconds=session_data["expires_in"]),
+                expires_in=session_data["expires_in"],
             )
 
         except WebTritErrorException as error:
@@ -2186,6 +2192,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 user_id=UserId(str(account_info["i_account"])),
                 access_token=AccessToken(access_token),
                 refresh_token=refresh_token,
+                expires_in=AccountAPI.access_token_expires_in(access_token),
                 **device_limits,
             )
         except WebTritErrorException as error:

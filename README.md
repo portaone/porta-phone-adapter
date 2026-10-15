@@ -120,6 +120,7 @@ Other switches:
 | `CAPABILITIES_CONFERENCE` | `false` | Merging calls into a conference. Happens entirely in Core and Janus — advertising only (WT-783) |
 | `CAPABILITIES_CONVERSATION_MUTE` | `true` | Muting one chat or SMS conversation. Stored and enforced by Core — advertising only (WT-1880) |
 | `CAPABILITIES_CALL_CENTER` | `false` | The "My Queues" screen (`/user/queues`, WT-1881) |
+| `CAPABILITIES_SESSION_AUTO_TERMINATE` | `true` | Lets users choose after how many idle days Core ends their sessions. Stored and enforced by Core, which refuses the setting while this is off (WT-1789) |
 
 ## PortaSwitch adapter settings
 

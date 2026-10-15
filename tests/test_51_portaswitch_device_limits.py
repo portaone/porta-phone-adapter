@@ -267,6 +267,14 @@ class TestLimitValues:
         assert "portaphone_max_devices='three'" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_access_token_lifetime_reaches_the_json(self):
+        # Core schedules its background refresh on it (WT-1789).
+        session = await sign_in(adapter())
+        body = SessionResponse.model_validate(session.model_dump()).model_dump(mode="json")
+
+        assert body["expires_in"] == 3600
+
+    @pytest.mark.asyncio
     async def test_limits_reach_the_json(self):
         # /session answers through SessionResponse; the fields must survive that model.
         subject = adapter(account_fields={MASTER_I_ACCOUNT: fields(portaphone_max_devices="2")})
