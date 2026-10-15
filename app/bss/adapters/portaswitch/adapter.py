@@ -706,10 +706,10 @@ class PortaSwitchAdapter(BSSAdapter):
             access_token (str): The token used to close the session.
 
         Returns:
-            bool: True if the session was successfully closed, False otherwise.
+            bool: True if the session was closed or had already expired, False otherwise.
 
         Raises:
-            WebTritErrorException: If the session is not found or cannot be closed.
+            WebTritErrorException: If the session cannot be closed.
         """
         try:
             return (await self._account_api.logout(access_token=access_token))["success"] == 1
@@ -718,6 +718,11 @@ class PortaSwitchAdapter(BSSAdapter):
             fault_code = extract_fault_code(error)
             if fault_code in ("Client.Session.logout.failed_to_process_access_token",):
                 raise session_close_error()
+            # The session has already expired on PortaBilling: "already gone" is
+            # the end state a logout asks for, so it is not an error (WT-2111).
+            if fault_code == "Server.Session.logout.session_id_does_not_exists":
+                logging.info("PortaSwitch session is already expired or gone; treating logout as done")
+                return True
 
             raise error
 
