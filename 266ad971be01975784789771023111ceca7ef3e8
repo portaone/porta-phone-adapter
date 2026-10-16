@@ -94,6 +94,30 @@
       },
       "revId": "266ad971be01975784789771023111ceca7ef3e8",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f6f338ce_10cca729",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 1
+      },
+      "lineNbr": 7,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-10-16T13:59:22Z",
+      "side": 1,
+      "message": "Added the test stand instructions (FreePBX 17 lab + adapter run and checks) to README.md in a separate change on top of this one: https://git.portaone.com:8443/c/porta-phone/adapter_python/+/363577",
+      "parentUuid": "c6227c91_03cde389",
+      "range": {
+        "startLine": 7,
+        "startChar": 17,
+        "endLine": 7,
+        "endChar": 48
+      },
+      "revId": "266ad971be01975784789771023111ceca7ef3e8",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     }
   ]
 }
