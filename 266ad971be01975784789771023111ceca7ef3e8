@@ -22,6 +22,30 @@
       },
       "revId": "266ad971be01975784789771023111ceca7ef3e8",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "92d47674_1e084e44",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 1
+      },
+      "lineNbr": 7,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-10-16T11:34:28Z",
+      "side": 1,
+      "message": "No, we have no FreePBX setup: FreePBX isn\u0027t used in any of our deployments, so there is no docker compose or stand for it. The change is covered by unit tests. The ticket reporter reproduced the crashes on a real FreePBX 17, and these fixes match the patches they applied there to get it working.",
+      "parentUuid": "b1d80d4e_913ab73b",
+      "range": {
+        "startLine": 7,
+        "startChar": 17,
+        "endLine": 7,
+        "endChar": 48
+      },
+      "revId": "266ad971be01975784789771023111ceca7ef3e8",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     }
   ]
 }
