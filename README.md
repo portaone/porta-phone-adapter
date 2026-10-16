@@ -187,6 +187,49 @@ Users sign in with the extension number and its SIP secret (the extension's
 contact list is every other extension; FreePBX has no search or paging for it, so
 `/api/v2/user/contacts` filters and pages the full list in the adapter.
 
+### FreePBX test stand
+
+We run no FreePBX ourselves, so to develop or check the adapter, set up a lab:
+
+1. **FreePBX 17.** Take a clean Debian 12 VM (2 vCPU, 2 GB RAM is enough) and, as root,
+   run Sangoma's official installer — it takes 30 minutes or more and logs to
+   `/var/log/pbx/freepbx17-install.log`:
+   ```bash
+   cd /tmp
+   wget https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
+   bash sng_freepbx_debian_install.sh
+   ```
+   Then open `http://<vm-ip>/admin` and create the admin user. Containers exist only from
+   third parties (none from Sangoma), so a VM is the supported way.
+2. **API module.** Admin → Module Admin: make sure **API** is installed and up to date —
+   versions up to 17.0.8 have a command injection in GraphQL (CVE-2026-40520).
+3. **Extensions.** Connectivity → Extensions → Add PJSIP extension, e.g. `1001` with
+   voicemail enabled and an e-mail on it, and `1002` with voicemail disabled — the two
+   cases sign-in and user info must both handle. Note each extension's **Secret**: it is
+   the sign-in password.
+4. **API application.** Connectivity → API → Applications → Add Application →
+   **Machine-to-Machine**, with scopes allowing GraphQL reads of core and voicemail
+   (the Scope Visualizer tab composes them, e.g. `gql:core`). Copy the Client ID and
+   Client Secret.
+5. **Firewall.** If the FreePBX firewall is on, add the adapter host to Connectivity →
+   Firewall → Networks as Trusted.
+6. **Adapter.** Build and run it against the lab:
+   ```bash
+   docker build -t adapter .
+   docker run --rm -p 8080:8080 \
+     -e BSS_ADAPTER_MODULE=bss.adapters.freepbx -e BSS_ADAPTER_CLASS=FreePBXAdapter \
+     -e FREEPBX_API_SERVER=http://<vm-ip> -e FREEPBX_SIP_SERVER=<vm-ip> \
+     -e FREEPBX_API_USER=<client id> -e FREEPBX_API_SECRET=<client secret> \
+     adapter
+   ```
+7. **Check.** Sign in, then read the user and the contacts with the returned token:
+   ```bash
+   curl -s -X POST localhost:8080/api/v1/session -H 'Content-Type: application/json' \
+     -d '{"login": "1001", "password": "<secret of 1001>"}'
+   curl -s localhost:8080/api/v1/user -H 'Authorization: Bearer <access_token>'
+   curl -s localhost:8080/api/v2/user/contacts -H 'Authorization: Bearer <access_token>'
+   ```
+
 ## Outbound connection pool (PortaSwitch)
 
 Every PortaSwitch call goes through one process-wide `httpx.AsyncClient` per TLS-verify
