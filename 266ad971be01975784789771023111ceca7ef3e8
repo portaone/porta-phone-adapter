@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "b1d80d4e_913ab73b",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 1
+      },
+      "lineNbr": 7,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-10-16T11:23:44Z",
+      "side": 1,
+      "message": "do we have a setup for freepbx? docker compose? etc. How to emulate and test it?",
+      "range": {
+        "startLine": 7,
+        "startChar": 17,
+        "endLine": 7,
+        "endChar": 48
+      },
+      "revId": "266ad971be01975784789771023111ceca7ef3e8",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
