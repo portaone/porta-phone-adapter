@@ -168,6 +168,25 @@ variables without a default are mandatory — the adapter does not start without
 | `JANUS_SIP_FORCE_TCP` | no | `false` | Hand the apps TCP instead of UDP as the SIP transport |
 | `ENABLE_ON_DEMAND_SESSION_MIGRATION` | no | `false` | Migrating sessions of an older adapter: a non-JWT access token answers "session upgrade needed" instead of "invalid", and a refresh token made only of digits is looked up in the hash table and, if absent, taken as an `i_account` itself; either way it is exchanged for a new session of that account without a password. Builds a table of a million hashes at start-up |
 
+## FreePBX adapter settings
+
+The FreePBX adapter (`BSS_ADAPTER_MODULE=bss.adapters.freepbx`,
+`BSS_ADAPTER_CLASS=FreePBXAdapter`) talks to the FreePBX GraphQL API as a
+Machine-to-Machine application (Connectivity → API → Add Application).
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `FREEPBX_API_SERVER` | no | `http://127.0.0.1` | Base URL of FreePBX; `/admin/api/api/token` and `/admin/api/api/gql` are appended |
+| `FREEPBX_API_USER` | yes | — | Client ID of the M2M application |
+| `FREEPBX_API_SECRET` | yes | — | Client Secret of the M2M application |
+| `FREEPBX_SIP_SERVER` | no | `167.172.185.158` | SIP server host handed to the apps (port 5060) — set it for any real deployment |
+
+Users sign in with the extension number and its SIP secret (the extension's
+`secret`), not the voicemail PIN, so an extension without voicemail can sign in too
+(WT-1931). The user's e-mail is the voicemail e-mail, absent when there is none. The
+contact list is every other extension; FreePBX has no search or paging for it, so
+`/api/v2/user/contacts` filters and pages the full list in the adapter.
+
 ## Outbound connection pool (PortaSwitch)
 
 Every PortaSwitch call goes through one process-wide `httpx.AsyncClient` per TLS-verify

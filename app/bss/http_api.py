@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from report_error import raise_webtrit_error
 from request_trace import (get_request_id, truncate_log_message,
@@ -27,9 +27,11 @@ class AuthSessionData(BaseModel):
 
 
 class OAuthSessionData(AuthSessionData):
-    access_token: str
-    access_token_expires_at: datetime = Field(default=None)
-    refresh_token: str = Field(default=None)
+    # Optional, so that extract_access_token can pass on a token response that
+    # has no expiry or no refresh token (a client_credentials grant has none)
+    access_token: Optional[str] = None
+    access_token_expires_at: Optional[datetime] = None
+    refresh_token: Optional[str] = None
 
 
 class HTTPAPIConnector(ABC):
