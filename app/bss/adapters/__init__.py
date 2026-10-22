@@ -320,8 +320,9 @@ class BSSAdapter(SessionManagement, OTPHandler,
             phone_numbers: List[str] = [],
             page: Optional[int] = 1,
             items_per_page: Optional[int] = 100,
+            sms_capable: bool = False,
     ) -> tuple[List[ContactInfo], int]:
-        """List of other extensions in the PBX"""
+        """List of other extensions in the PBX; with sms_capable, only those having an SMS number"""
         raise NotImplementedError("Override this method in your sub-class")
 
     def retrieve_contact_by_user_id(self, session: SessionInfo, user: UserInfo, user_id: str) -> ContactInfo:
@@ -516,8 +517,9 @@ class BSSAdapterExternalDB(BSSAdapter, SampleOTPHandler):
             phone_numbers: List[str] = [],
             page: Optional[int] = 1,
             items_per_page: Optional[int] = 100,
+            sms_capable: bool = False,
     ) -> tuple[List[ContactInfo], int]:
-        """List of other extensions in the PBX"""
+        """List of other extensions in the PBX; with sms_capable, only those having an SMS number"""
         raise NotImplementedError("Override this method in your sub-class")
 
     @abstractmethod

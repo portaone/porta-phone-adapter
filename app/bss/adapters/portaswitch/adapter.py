@@ -945,6 +945,7 @@ class PortaSwitchAdapter(BSSAdapter):
             phone_numbers: List[str] = [],
             page: Optional[int] = 1,
             items_per_page: Optional[int] = 100,
+            sms_capable: bool = False,
     ) -> tuple[List[ContactInfo], int]:
         """Returns information about contacts based on the configured selection mode with pagination
 
@@ -956,6 +957,8 @@ class PortaSwitchAdapter(BSSAdapter):
             search (str | None): The Value to search specific contact by firstname, lastname, alias, or email address.
             page (int): The page number of the contact list to return.
             items_per_page (int): The number of items per page.
+            sms_capable (bool): Return only contacts that have at least one SMS number (a DID),
+                counted in the total as such. Not applied to a `phone_numbers` lookup.
 
         Returns:
             tuple[List[ContactInfo], int]: List of contacts in WebTrit representation and total count.
@@ -970,6 +973,12 @@ class PortaSwitchAdapter(BSSAdapter):
             i_account = int(account_info["i_account"])
             main_i_customer, all_i_customers = await self._get_office_customer_ids(i_customer)
             is_hierarchy = len(all_i_customers) > 1
+
+            def _sms_only(items: List[ContactInfo]) -> List[ContactInfo]:
+                """Drop contacts without an SMS number when sms_capable is asked for (WT-1609)."""
+                if not sms_capable:
+                    return items
+                return [c for c in items if c.numbers and c.numbers.sms]
 
             # Normalize and prepare phone numbers if provided
             normalized_phone_numbers: set[str] = set[str]()
@@ -1139,27 +1148,30 @@ class PortaSwitchAdapter(BSSAdapter):
                             if any(search.lower() in ext.get(field, "").lower() for field in search_fields)
                         ]
 
-                    # Fetch aliases only for extensions that survived filtering
-                    async def _get_aliases_for_ext(ext):
+                    # Fetch the accounts only for extensions that survived filtering: extension rows
+                    # carry neither aliases nor DIDs, the account does
+                    async def _get_account_for_ext(ext):
                         i_acc = ext.get("i_account")
                         if not i_acc:
-                            return []
+                            return None
                         try:
                             account = (await self._admin_api.get_account_info(
                                 i_account=int(i_acc)
                             )).get("account_info")
                             if account:
-                                return (await _enrich_with_aliases(account)).get("alias_list", [])
+                                return await _enrich_with_aliases(account)
                         except Exception as e:
-                            logging.debug(f"Failed to fetch aliases for extension {ext.get('id')}: {e}")
-                        return []
+                            logging.debug(f"Failed to fetch the account of extension {ext.get('id')}: {e}")
+                        return None
 
                     if filtered_extensions:
-                        aliases_per_ext = await _gather_limited(
-                            [_get_aliases_for_ext(ext) for ext in filtered_extensions]
+                        account_per_ext = await _gather_limited(
+                            [_get_account_for_ext(ext) for ext in filtered_extensions]
                         )
-                        for ext, aliases in zip(filtered_extensions, aliases_per_ext):
-                            contacts.append(Serializer.get_contact_info_by_extension(ext, aliases, i_account))
+                        for ext, account in zip(filtered_extensions, account_per_ext):
+                            contacts.append(Serializer.get_contact_info_by_extension(
+                                ext, (account or {}).get("alias_list", []), i_account, account
+                            ))
 
                     # Add custom contacts before pagination
                     custom_contacts = [Serializer.get_contact_info_by_custom_entry(entry) for entry in
@@ -1175,6 +1187,7 @@ class PortaSwitchAdapter(BSSAdapter):
                                 search_lower in (contact.numbers.main or "").lower())
                         ]
                     contacts.extend(custom_contacts)
+                    contacts = _sms_only(contacts)
 
                     # Apply pagination
                     total_count = len(contacts)
@@ -1211,7 +1224,46 @@ class PortaSwitchAdapter(BSSAdapter):
                             return False
                         return account["i_account"] != i_account
 
-                    if search:
+                    # With sms_capable and the account cache on, a search runs over the cached
+                    # directory in memory: the total is exact and a keystroke costs no PortaBilling
+                    # calls (one extensions list in an office hierarchy), where the field queries
+                    # below may need a second, 1000-row round.
+                    search_in_cache = (
+                        bool(search) and sms_capable and self._portaswitch_settings.CONTACTS_CACHE_TTL > 0
+                    )
+                    search_truncated = False
+
+                    async def _search_cached_accounts(accounts: list[dict]) -> list[dict]:
+                        """The in-memory counterpart of the field queries and the extension and
+                        alias-DID lookups of the search branch below."""
+                        needle = search.lower()
+                        did = search.replace("+", "").strip()
+                        # In an office hierarchy extensions live on the main office, so an
+                        # account's own extension_id can be absent: match the extension list too
+                        ext_i_accounts: set[int] = set()
+                        if is_hierarchy:
+                            try:
+                                extensions = (await self._admin_api.get_extensions_list(
+                                    main_i_customer, get_main_office_extensions=True
+                                ))["extensions_list"]
+                                ext_i_accounts = {
+                                    int(ext["i_account"]) for ext in extensions
+                                    if ext.get("i_account") and needle in ext.get("id", "").lower()
+                                }
+                            except Exception as e:
+                                logging.debug(f"Failed to fetch extensions for search: {e}")
+
+                        def _matches(account: dict) -> bool:
+                            if any(needle in str(account.get(field) or "").lower() for field in (
+                                    "id", "firstname", "lastname", "extension_name", "email", "extension_id")):
+                                return True
+                            if int(account["i_account"]) in ext_i_accounts:
+                                return True
+                            return bool(did) and any(alias.get("id") == did for alias in account.get("alias_list", []))
+
+                        return [a for a in accounts if _matches(a)]
+
+                    if search and not search_in_cache:
                         # Search mode: run all (customer × field) combinations in parallel.
                         # Fetch only enough records per field to support in-memory pagination up
                         # to the current page. Without this cap, _get_all_accounts_by_customer
@@ -1237,22 +1289,43 @@ class PortaSwitchAdapter(BSSAdapter):
                             ]
                         ]
 
-                        async def _fetch_field(task):
+                        async def _fetch_field(task, limit):
                             cust_id, param, value = task
                             resp = await self._admin_api.get_account_list(
-                                cust_id, limit=search_fetch_limit, offset=0, **{param: value}
+                                cust_id, limit=limit, offset=0, **{param: value}
                             )
                             if isinstance(resp, dict):
                                 return resp.get("account_list") or [], resp.get("total", 0)
                             return [], 0
 
-                        for accs, field_total in await _gather_limited(
-                            [_fetch_field(t) for t in search_tasks]
-                        ):
-                            for account in accs:
-                                accounts_dict[account["i_account"]] = account
-                            if field_total > search_total_from_api:
-                                search_total_from_api = field_total
+                        async def _run_field_queries(limit) -> bool:
+                            """Merge one round of the field queries into accounts_dict.
+                            Returns whether any field had more matches than it fetched."""
+                            nonlocal search_total_from_api
+                            truncated = False
+                            for accs, field_total in await _gather_limited(
+                                [_fetch_field(t, limit) for t in search_tasks]
+                            ):
+                                for account in accs:
+                                    accounts_dict[account["i_account"]] = account
+                                if field_total > search_total_from_api:
+                                    search_total_from_api = field_total
+                                if len(accs) >= limit or field_total > len(accs):
+                                    truncated = True
+                            return truncated
+
+                        search_truncated = await _run_field_queries(search_fetch_limit)
+
+                        # With sms_capable most matches may have no DID (plain extensions), so a
+                        # bounded round can leave the page short while more SMS contacts exist.
+                        # One more round at the API maximum then, still O(5) parallel calls.
+                        if sms_capable and search_truncated and search_fetch_limit < MAX_API_LIMIT:
+                            sms_matches = sum(
+                                1 for a in accounts_dict.values()
+                                if _passes_filter(a) and Serializer._parse_sms_numbers(a)
+                            )
+                            if sms_matches <= page * items_per_page:
+                                search_truncated = await _run_field_queries(MAX_API_LIMIT)
 
                         # Also search by extension number (short dial / extension_id)
                         try:
@@ -1306,6 +1379,7 @@ class PortaSwitchAdapter(BSSAdapter):
 
                         accounts = list(accounts_dict.values())
                     else:
+                        # Also a search over the cache (search_in_cache), filtered after the read.
                         # Non-search: fetch every account of every office in parallel chunks of
                         # 1000 and paginate in-memory. API-level LIMIT/OFFSET cannot be used here
                         # (WT-1774): the offset would have to be expressed in raw PortaBilling
@@ -1326,6 +1400,9 @@ class PortaSwitchAdapter(BSSAdapter):
                             (acc for accs in accounts_per_customer for acc in accs),
                             key=lambda a: int(a["i_account"]),
                         )
+
+                        if search_in_cache:
+                            accounts = await _search_cached_accounts(accounts)
 
                     # Filter accounts
                     filtered_accounts = [a for a in accounts if _passes_filter(a)]
@@ -1349,6 +1426,7 @@ class PortaSwitchAdapter(BSSAdapter):
 
                     # Add custom contacts; they tail the directory on the last page
                     account_contacts.extend(custom_contacts)
+                    account_contacts = _sms_only(account_contacts)
 
                     # Apply pagination. One code path for every sub-mode so that the slice offset
                     # and items_total always describe the same row set (WT-1774): reporting
@@ -1357,7 +1435,9 @@ class PortaSwitchAdapter(BSSAdapter):
                     # In search mode: use the API-reported total (max across fields) as total_count
                     # rather than len(account_contacts), because the bounded fetch only retrieves
                     # enough records for the current page — len() would severely undercount.
-                    if search:
+                    # With sms_capable the API totals also count accounts without a DID, so they
+                    # stand in only when a field was truncated and the exact count is unknown.
+                    if search and (not sms_capable or search_truncated):
                         total_count = max(search_total_from_api, len(account_contacts))
                     else:
                         total_count = len(account_contacts)
@@ -1392,8 +1472,9 @@ class PortaSwitchAdapter(BSSAdapter):
                                 result.append(contact)
                         return result
 
-                    if search:
-                        # Fetch all phonebook records for in-memory search
+                    if search or sms_capable:
+                        # Fetch all phonebook records for in-memory search; also for sms_capable,
+                        # as API-level pagination cannot account for the contacts it drops
                         phonebook = []
                         pb_page = 1
                         PHONEBOOK_BATCH = 1000
@@ -1407,7 +1488,7 @@ class PortaSwitchAdapter(BSSAdapter):
                             pb_page += 1
 
                         contacts = await _build_phonebook_contacts(phonebook)
-                        search_lower = search.lower()
+                        search_lower = (search or "").lower()
                         filtered_custom = [
                             c for c in custom_contacts
                             if any(search_lower in str(v or "").lower() for v in [
@@ -1420,6 +1501,7 @@ class PortaSwitchAdapter(BSSAdapter):
                             ))
                         ]
                         contacts.extend(filtered_custom)
+                        contacts = _sms_only(contacts)
                         total_count = len(contacts)
                         start_idx = (page - 1) * items_per_page
                         end_idx = start_idx + items_per_page
@@ -1518,6 +1600,8 @@ class PortaSwitchAdapter(BSSAdapter):
                                 )
                             )
                         ]
+
+                    contacts = _sms_only(contacts)
 
                     # Apply pagination
                     total_count = len(contacts)
