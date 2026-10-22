@@ -672,6 +672,7 @@ async def get_user_contact_list_v2(
         auth_data: HTTPAuthorizationCredentials = Depends(security),
         page: Optional[conint(ge=1)] = 1,
         items_per_page: Optional[conint(ge=1, le=1000)] = 100,
+        sms_capable: bool = False,
         x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
 ) -> (
         Union[
@@ -683,7 +684,8 @@ async def get_user_contact_list_v2(
         ]
 ):
     """
-    Get corporate directory (contacts of other users in the same PBX) with pagination
+    Get corporate directory (contacts of other users in the same PBX) with pagination.
+    With `sms_capable`, only contacts that have at least one SMS number are returned.
     """
     global bss, bss_capabilities
 
@@ -693,7 +695,10 @@ async def get_user_contact_list_v2(
                             tenant_id=bss.default_id_if_none(x_webtrit_tenant_id))
 
     if Capabilities.extensions in bss_capabilities:
-        contacts, total = await call_bss(bss.retrieve_contacts_v2, session, user, search, phone_numbers, page, items_per_page)
+        # Passed only when set, so that adapters without the parameter keep working
+        extra = {'sms_capable': True} if sms_capable else {}
+        contacts, total = await call_bss(bss.retrieve_contacts_v2, session, user, search, phone_numbers, page,
+                                         items_per_page, **extra)
 
         return Contacts(items=contacts,
                         pagination=Pagination(

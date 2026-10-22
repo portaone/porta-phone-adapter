@@ -135,12 +135,15 @@ class Serializer:
         )
 
     @staticmethod
-    def get_contact_info_by_extension(extension_info: dict, aliases: list, current_user: int) -> ContactInfo:
+    def get_contact_info_by_extension(extension_info: dict, aliases: list, current_user: int,
+                                      account_info: Optional[dict] = None) -> ContactInfo:
         """Forms ContactInfo based on the input extension_info.
         Parameters:
             extension_info: dict: The information about the extensions to be added to ContactInfo.
             aliases: list: List of additional numbers.
             current_user: int: i_account of the current user who making the request.
+            account_info: dict | None: The extension's account; extension rows carry no DIDs,
+                so the SMS numbers are taken from it when given.
 
         Returns:
             ContactInfo: The filled structure of ContactInfo.
@@ -157,7 +160,7 @@ class Serializer:
             numbers=Numbers(
                 additional=[alias["id"] for alias in aliases],
                 main=extension_info.get("id"),
-                sms=Serializer._parse_sms_numbers(extension_info),
+                sms=Serializer._parse_sms_numbers(account_info or extension_info),
             ),
         )
 

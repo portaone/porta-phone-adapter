@@ -465,6 +465,7 @@ class NetsapiensAdapter(BSSAdapter):
             phone_numbers: List[str] = [],
             page: Optional[int] = 1,
             items_per_page: Optional[int] = 100,
+            sms_capable: bool = False,
     ) -> tuple[List[ContactInfo], int]:
         """
         Retrieve contacts with pagination (no search).
@@ -476,6 +477,8 @@ class NetsapiensAdapter(BSSAdapter):
         page = page or 1
         items_per_page = items_per_page or 100
         contacts = self.retrieve_contacts(session, user)
+        if sms_capable:
+            contacts = [c for c in contacts if c.numbers and c.numbers.sms]
 
         start_index = (page - 1) * items_per_page
         end_index = start_index + items_per_page
