@@ -571,7 +571,7 @@ class TestOtherPaths:
         assert session.customer_max_device_switches == 6
 
     @pytest.mark.asyncio
-    async def test_refresh_carries_no_limits(self):
+    async def test_refresh_carries_the_customer_but_no_limits(self):
         subject = adapter(account_fields={MASTER_I_ACCOUNT: fields(portaphone_max_devices="3")})
         subject._settings = types.SimpleNamespace(ENABLE_ON_DEMAND_SESSION_MIGRATION=False)
 
@@ -582,8 +582,10 @@ class TestOtherPaths:
 
         session = await subject.refresh_session("rt")
 
+        assert session.customer_id == str(I_CUSTOMER)
         assert session.account_max_devices is None
         assert subject._admin_api.account_field_reads == []
+        assert subject._admin_api.customer_field_reads == []
 
 
 # --------------------------------------------------------------------------- #
