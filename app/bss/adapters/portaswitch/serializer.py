@@ -538,6 +538,8 @@ class Serializer:
         486/600 Busy -> 17, 480 Temporarily unavailable -> 18, 603 Decline -> 21 (WT-1965).
         Cause 21 also stands for 401/402/403, which a network or billing answers the
         caller with, so it means "the callee declined" only on an incoming call.
+        Cause 130 "Unreachable, completed elsewhere" (SIP-13984, MR133) marks a hunt-group
+        leg another member answered; Q.850 cause 13 is reserved and never sent.
         """
         if failed and direction == Direction.outgoing and disconnect_cause == 1:
             return ConnectStatus.failed
@@ -547,7 +549,7 @@ class Serializer:
             return ConnectStatus.declined
         elif failed and disconnect_cause in (18, 19):
             return ConnectStatus.missed
-        elif failed and disconnect_cause == 13:
+        elif failed and disconnect_cause == 130:
             return ConnectStatus.completed_elsewhere
         elif not failed and disconnect_cause == 16:
             return ConnectStatus.accepted
