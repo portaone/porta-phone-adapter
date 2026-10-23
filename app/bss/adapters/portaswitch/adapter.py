@@ -680,6 +680,7 @@ class PortaSwitchAdapter(BSSAdapter):
 
             access_token: str = session_data["access_token"]
             account_info: dict = (await self._account_api.get_account_info(access_token=access_token))["account_info"]
+            i_customer = account_info.get("i_customer")
 
             return SessionInfo(
                 user_id=UserId(str(account_info["i_account"])),
@@ -687,6 +688,10 @@ class PortaSwitchAdapter(BSSAdapter):
                 refresh_token=session_data["refresh_token"],
                 expires_at=datetime.now() + timedelta(seconds=session_data["expires_in"]),
                 expires_in=session_data["expires_in"],
+                # The customer only, not the limits: Core learns the customer of accounts
+                # signed in before the device limits existed this way (WT-2137), and a
+                # custom-field read failing here would otherwise hand Core no limits at all.
+                customer_id=str(i_customer) if i_customer is not None else None,
             )
 
         except WebTritErrorException as error:

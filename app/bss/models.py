@@ -794,7 +794,8 @@ class SessionResponse(BaseModel):
     expires_in: Optional[int] = None
     # adding this manually
     # Device and session limits Core enforces for the signed-in user (WT-2005). Set
-    # only on sign-in; None means "no limit" (the adapter reports a 0 as None too).
+    # only on sign-in, apart from customer_id, which a refresh reports too (WT-2137);
+    # None means "no limit" (the adapter reports a 0 as None too).
     customer_id: Optional[str] = None
     account_max_devices: Optional[int] = None
     customer_max_devices: Optional[int] = None
