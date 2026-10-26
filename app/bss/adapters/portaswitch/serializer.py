@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
-from bss.models import SIPTransport, UserId
+from bss.models import Crm, SIPTransport, UserId
 from bss.types import (
     Balance,
     BalanceType,
@@ -52,7 +52,12 @@ class Serializer:
 
     @staticmethod
     def get_end_user(
-            account_info: dict, aliases: list, sip_server: SIPServer, hide_balance: bool, force_tcp: bool
+            account_info: dict,
+            aliases: list,
+            sip_server: SIPServer,
+            hide_balance: bool,
+            force_tcp: bool,
+            crm: Optional[Crm] = None,
     ) -> EndUser:
         """Forms EndUser based on the input account_info and its aliases.
 
@@ -60,6 +65,7 @@ class Serializer:
             account_info :dict: The information about the account to be added to EndUser.
             aliases :list: The information about aliases of the account to be added to EndUser.
             hide_balance :bool: Ensures that the end user object hides balance
+            crm :Crm: The CRM of the account's company, or None when it cannot be told.
 
         Returns:
             Response :EndUser: The filled structure of EndUser.
@@ -100,6 +106,7 @@ class Serializer:
                 UserServiceActiveStatus.active if account_info["is_active"] == 1 else UserServiceActiveStatus.blocked
             ),
             time_zone=account_info["time_zone_name"],
+            crm=crm,
         )
 
     @staticmethod

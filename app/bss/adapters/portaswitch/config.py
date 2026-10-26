@@ -125,6 +125,11 @@ class PortaSwitchSettings(BaseSettings):
     # customer, so a burst of sign-ins does not re-read them every time. A limit changed
     # in PortaBilling takes effect within this time. 0 reads them on every sign-in.
     DEVICE_LIMITS_CACHE_TTL: int = DEFAULT_DEVICE_LIMITS_CACHE_TTL
+    # The customer custom field holding the address of the company's CRM, e.g.
+    # acme.zendesk.com, handed to Core with the user info (WT-2109). Blank, the default,
+    # reads nothing: the deployment names the field only where the CRM integration is on,
+    # so an installation without it pays no extra request to the switch.
+    CRM_HOST_CUSTOM_FIELD: str = ""
 
     @field_validator("API_TIMEOUT", mode='before')
     @classmethod
