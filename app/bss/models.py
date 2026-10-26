@@ -755,6 +755,15 @@ class Contact(BaseModel):
     )
 
 
+# adding this manually
+class Crm(BaseModel):
+    host: Optional[str] = Field(
+        None,
+        description="The address of the CRM, as the company entered it.",
+        json_schema_extra={"example": "acme.zendesk.com"},
+    )
+
+
 class UserInfoShowResponse(BaseModel):
     alias_name: Optional[str] = Field(
         None,
@@ -780,6 +789,12 @@ class UserInfoShowResponse(BaseModel):
         None,
         description="The preferred time zone for the user's displayed time values\n(see [time zones list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).\nIf not provided, the **WebTrit Core** server time zone is used.\n",
         example="Europe/Kyiv",
+    )
+    # adding this manually
+    crm: Optional[Crm] = Field(
+        None,
+        description="The CRM of the user's company. `null` when the adapter cannot tell; `host` is\n"
+        "`null` when the company has no CRM.\n",
     )
 
 
