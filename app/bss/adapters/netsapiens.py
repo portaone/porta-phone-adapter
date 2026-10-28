@@ -494,7 +494,11 @@ class NetsapiensAdapter(BSSAdapter):
                        items_per_page: Optional[int] = 100,
                        time_from: Optional[datetime] = None,
                        time_to: Optional[datetime] = None,
+                       time_floor: Optional[datetime] = None,
                        ) -> Tuple[List[CDRInfo], int]:
+        if time_floor is not None and (time_from is None or time_from < time_floor):
+            time_from = time_floor
+
         # Get all CDRs first
         cdrs = self.api_client.get_cdrs(user.user_id,
                                         start_time=time_from,

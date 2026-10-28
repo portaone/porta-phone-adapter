@@ -1677,7 +1677,7 @@ class PortaSwitchAdapter(BSSAdapter):
         return Serializer.get_contact_info_by_account(account_info, int(user.user_id))
 
     def _call_history_range(
-            self, time_from: datetime | None, time_to: datetime | None
+            self, time_from: datetime | None, time_to: datetime | None, time_floor: datetime | None = None
     ) -> tuple[datetime, datetime]:
         """Resolves the call history date range that is sent to PortaBilling.
 
@@ -1703,9 +1703,16 @@ class PortaSwitchAdapter(BSSAdapter):
         raises TypeError on the first comparison - which nothing here would turn into
         anything but a 500.
 
+        `time_floor` is applied last, after the window, so it can only narrow the range: it
+        is the moment the user cleared their history (WT-2154), and taking it for `time_from`
+        would widen the default window back to everything since then. It is rounded up to
+        the second, the precision PortaBilling is sent, so a call of the second the history
+        was cleared in stays cleared.
+
         Parameters:
             time_from (datetime | None): Start of the range as the client asked for it.
             time_to (datetime | None): End of the range as the client asked for it.
+            time_floor (datetime | None): Nothing earlier than this may be returned.
 
         Returns:
             tuple[datetime, datetime]: The naive-UTC range to filter the CDRs by.
@@ -1723,6 +1730,12 @@ class PortaSwitchAdapter(BSSAdapter):
 
         if time_from is None:
             time_from = self._call_history_window_start(time_to, window_hours)
+
+        time_floor = self._as_naive_utc(time_floor)
+        if time_floor is not None:
+            if time_floor.microsecond and time_floor < datetime.max.replace(microsecond=0):
+                time_floor = time_floor.replace(microsecond=0) + timedelta(seconds=1)
+            time_from = max(time_from, time_floor)
 
         return time_from, time_to
 
@@ -1780,6 +1793,7 @@ class PortaSwitchAdapter(BSSAdapter):
             items_per_page: Optional[int] = 100,
             time_from: datetime | None = None,
             time_to: datetime | None = None,
+            time_floor: datetime | None = None,
     ) -> tuple[list[CDRInfo], int]:
         """Returns the CDR history of the logged-in PortaSwitch account.
 
@@ -1791,6 +1805,8 @@ class PortaSwitchAdapter(BSSAdapter):
             time_from (datetime | None): Start of the time range filter. When omitted it
                 defaults to CALL_HISTORY_DEFAULT_WINDOW_HOURS before the end of the range.
             time_to (datetime | None): End of the time range filter. Defaults to now.
+            time_floor (datetime | None): Lower bound applied after the default window, so
+                it only ever narrows the range (WT-2154).
 
         Returns:
             tuple[list[CDRInfo], int]: A tuple containing the list of CDR records and the total
@@ -1800,7 +1816,10 @@ class PortaSwitchAdapter(BSSAdapter):
             WebTritErrorException: If the user is not found or the session is invalid.
         """
         try:
-            time_from, time_to = self._call_history_range(time_from, time_to)
+            time_from, time_to = self._call_history_range(time_from, time_to, time_floor)
+            if time_floor is not None and time_from >= time_to:
+                # Cleared up to the end of the range: nothing the switch could return.
+                return [], 0
 
             result: dict = await self._account_api.get_xdr_list(
                 access_token=safely_extract_scalar_value(session.access_token),

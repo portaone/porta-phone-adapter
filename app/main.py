@@ -770,6 +770,7 @@ async def get_user_history_list(
         items_per_page: Optional[conint(ge=1)] = 100,
         time_from: Optional[datetime] = None,
         time_to: Optional[datetime] = None,
+        time_floor: Optional[datetime] = None,
         auth_data: HTTPAuthorizationCredentials = Depends(security),
         x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
 ) -> Union[
@@ -788,6 +789,10 @@ async def get_user_history_list(
     fills in only an omitted bound, defaulting `time_to` to now and looking
     `PORTASWITCH_CALL_HISTORY_DEFAULT_WINDOW_HOURS` (24 by default) back from it, so a
     client that sends nothing gets recent history rather than the whole archive.
+
+    `time_floor` is when the user cleared their history (WT-2154): no CDR from before it is
+    returned. Unlike `time_from` it is applied after the default window, so it only ever
+    narrows the range.
     """
     global bss, bss_capabilities
 
@@ -804,6 +809,7 @@ async def get_user_history_list(
             items_per_page=items_per_page,
             time_from=time_from,
             time_to=time_to,
+            time_floor=time_floor,
         )
 
         history = Calls(items=calls,
