@@ -338,8 +338,10 @@ class BSSAdapter(SessionManagement, OTPHandler,
             items_per_page: Optional[int] = 100,
             time_from: Optional[datetime] = None,
             time_to: Optional[datetime] = None,
+            time_floor: Optional[datetime] = None,
     ) -> Tuple[List[CDRInfo], int]:
-        """Obtain CDRs (call history) of the user"""
+        """Obtain CDRs (call history) of the user; none from before `time_floor`, which,
+        unlike `time_from`, may only narrow whatever range the adapter defaults to"""
         raise NotImplementedError("Override this method in your sub-class")
 
     @abstractmethod
@@ -531,8 +533,10 @@ class BSSAdapterExternalDB(BSSAdapter, SampleOTPHandler):
             items_per_page: Optional[int] = 100,
             time_from: Optional[datetime] = None,
             time_to: Optional[datetime] = None,
+            time_floor: Optional[datetime] = None,
     ) -> Tuple[List[CDRInfo], int]:
-        """Obtain CDRs (call history) of the user"""
+        """Obtain CDRs (call history) of the user; none from before `time_floor`, which,
+        unlike `time_from`, may only narrow whatever range the adapter defaults to"""
         raise NotImplementedError("Override this method in your sub-class")
 
     @abstractmethod

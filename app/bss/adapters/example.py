@@ -157,7 +157,8 @@ class ExampleBSSAdapter(BSSAdapterExternalDB):
                        page: int,
                        items_per_page: int,
                        time_from: datetime = None,
-                       time_to: datetime = None) -> tuple[list[CDRInfo], int]:
+                       time_to: datetime = None,
+                       time_floor: datetime = None) -> tuple[list[CDRInfo], int]:
         """Obtain CDRs (call history) of the user"""
         if time_from and time_from < datetime.datetime(2020, 1, 1):
             # return fixed number of calls to test pagination

@@ -342,3 +342,59 @@ async def test_the_sentinels_no_longer_reach_the_switch():
     assert sent["params"]["from_date"] != "1970-01-01 00:00:00"
     assert sent["params"]["to_date"] != "9000-01-01 00:00:00"
     assert sent["params"]["get_total"] == 1
+
+
+# --- the floor a cleared history sets (WT-2154) ------------------------------
+
+def test_a_floor_inside_the_window_narrows_it():
+    adapter = make_adapter()
+    time_to = datetime(2026, 10, 28, 12, 0)
+
+    time_from, _ = adapter._call_history_range(None, time_to, datetime(2026, 10, 28, 9, 0))
+
+    assert time_from == datetime(2026, 10, 28, 9, 0)
+
+
+def test_a_floor_before_the_window_does_not_widen_it():
+    adapter = make_adapter()
+    time_to = datetime(2026, 10, 28, 12, 0)
+
+    time_from, _ = adapter._call_history_range(None, time_to, datetime(2026, 1, 1))
+
+    assert time_to - time_from == timedelta(hours=WINDOW_DEFAULT)
+
+
+def test_a_floor_narrows_an_explicit_range_too():
+    adapter = make_adapter()
+
+    time_from, time_to = adapter._call_history_range(
+        datetime(2026, 1, 1), datetime(2026, 10, 28), datetime(2026, 10, 1)
+    )
+
+    assert (time_from, time_to) == (datetime(2026, 10, 1), datetime(2026, 10, 28))
+
+
+def test_a_floor_is_rounded_up_to_the_second_and_converted_to_naive_utc():
+    adapter = make_adapter()
+    floor = datetime(2026, 10, 28, 11, 0, 0, 500000, tzinfo=timezone.utc)
+
+    time_from, _ = adapter._call_history_range(None, datetime(2026, 10, 28, 12, 0), floor)
+
+    assert time_from == datetime(2026, 10, 28, 11, 0, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_range_ending_before_the_floor_does_not_reach_the_switch():
+    adapter = make_adapter()
+    api = RecordingAccountAPI()
+    adapter._account_api = api
+
+    result = await adapter.retrieve_calls(
+        SessionInfo(user_id="1", access_token="token", refresh_token="refresh"),
+        UserInfo(user_id="1"),
+        time_to=datetime(2026, 10, 28, 12, 0),
+        time_floor=datetime(2026, 10, 28, 12, 0),
+    )
+
+    assert result == ([], 0)
+    assert api.calls == []
