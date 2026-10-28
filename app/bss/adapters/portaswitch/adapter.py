@@ -22,6 +22,7 @@ from bss.models import (
     UserId,
     OtpId,
     AccessToken, SessionResponse,
+    Crm,
 )
 from bss.types import (
     CallRecordingId,
@@ -135,6 +136,25 @@ MAX_DEVICE_SWITCHES_CUSTOM_FIELD: Final[str] = "portaphone_max_device_switches"
 #: int: Upper bound on each device-limit cache (one per i_account, one per i_customer),
 #: so a switch with many accounts cannot grow them without limit.
 DEVICE_LIMITS_CACHE_MAX: Final[int] = 10_000
+
+#: int: Seconds to reuse a company's CRM address (WT-2109). Core asks for the user info of
+#: every employee, and the address is the same for all of them.
+CRM_HOST_CACHE_TTL: Final[int] = 300
+
+#: int: Upper bound on the CRM address cache (one entry per i_customer).
+CRM_HOST_CACHE_MAX: Final[int] = 10_000
+
+#: int: Seconds a CRM address read may take. The user info waits for it, and a switch that does
+#: not answer must cost the CRM address, not the whole request.
+CRM_HOST_READ_TIMEOUT: Final[int] = 5
+
+#: int: Seconds a company's CRM address is not read again after a failed read, so a switch in
+#: trouble is not asked, and waited for, on every user info.
+CRM_HOST_RETRY_AFTER: Final[int] = 30
+
+#: int: PortaBilling's i_office_type of a branch office, which takes its main office's
+#: CRM address when its own field is blank.
+BRANCH_OFFICE_TYPE: Final[int] = 2
 
 #: Default fan-out concurrency for parallel PortaSwitch API calls (replaces the
 #: former ThreadPoolExecutor(max_workers=10) pools). WT-1720.
@@ -358,6 +378,7 @@ class PortaSwitchAdapter(BSSAdapter):
         self._init_contacts_cache_state()
         self._init_env_email_cache_state()
         self._init_device_limits_cache_state()
+        self._init_crm_host_cache_state()
 
         self._otp_storage = configure_otp_storage(self._otp_settings)
         self._cached_capabilities = self.calculate_capabilities()
@@ -408,6 +429,17 @@ class PortaSwitchAdapter(BSSAdapter):
         # Kept apart because one customer read serves every account of that customer.
         self._account_limits_cache: Dict[int, tuple] = {}
         self._customer_limits_cache: Dict[int, tuple] = {}
+
+    def _init_crm_host_cache_state(self) -> None:
+        """Sets up the cache of the companies' CRM addresses (WT-2109).
+
+        Its own method for the same reason as _init_call_queue_state: tests that
+        bypass __init__ still get the real attributes.
+        """
+        # i_customer -> (monotonic ts, address or None).
+        self._crm_host_cache: Dict[int, tuple] = {}
+        # i_customer -> monotonic ts of the last failed read.
+        self._crm_host_failed_at: Dict[int, float] = {}
 
     async def _notification_email(self) -> Optional[str]:
         """Returns the email OTP codes are sent from, or None if it cannot be read.
@@ -761,6 +793,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 self._sip_server,
                 self._portaswitch_settings.HIDE_BALANCE_IN_USER_INFO,
                 self._settings.JANUS_SIP_FORCE_TCP,
+                crm=await self._read_crm(account_info),
             )
 
         except WebTritErrorException as error:
@@ -2774,6 +2807,75 @@ class PortaSwitchAdapter(BSSAdapter):
             while len(cache) > DEVICE_LIMITS_CACHE_MAX:
                 cache.pop(next(iter(cache)))
         return limits
+
+    async def _read_crm(self, account_info: dict) -> Optional[Crm]:
+        """The CRM of the account's company, from a customer custom field (WT-2109).
+
+        A branch office whose field is blank takes its main office's address. The answer is
+        reused for CRM_HOST_CACHE_TTL. None means the adapter cannot tell - the lookup is
+        switched off, or the read failed with nothing cached - and Core keeps what it knew;
+        a failed read serves the last answer for the company, however old, and is not tried
+        again for CRM_HOST_RETRY_AFTER.
+        """
+        field = (self._portaswitch_settings.CRM_HOST_CUSTOM_FIELD or "").strip()
+        if not field or account_info.get("i_customer") is None:
+            return None
+
+        i_customer = int(account_info["i_customer"])
+        cached = self._crm_host_cache.get(i_customer)
+        if cached and time.monotonic() - cached[0] < CRM_HOST_CACHE_TTL:
+            return Crm(host=cached[1])
+
+        failed_at = self._crm_host_failed_at.get(i_customer)
+        if failed_at is not None and time.monotonic() - failed_at < CRM_HOST_RETRY_AFTER:
+            return Crm(host=cached[1]) if cached else None
+
+        try:
+            host = await asyncio.wait_for(self._customer_crm_host(i_customer, field), CRM_HOST_READ_TIMEOUT)
+        except Exception as e:
+            logging.warning(f"Cannot read the CRM address of i_customer={i_customer}: {e!r}")
+            self._crm_host_failed_at.pop(i_customer, None)
+            self._crm_host_failed_at[i_customer] = time.monotonic()
+            while len(self._crm_host_failed_at) > CRM_HOST_CACHE_MAX:
+                self._crm_host_failed_at.pop(next(iter(self._crm_host_failed_at)))
+            return Crm(host=cached[1]) if cached else None
+
+        self._crm_host_failed_at.pop(i_customer, None)
+        # Re-inserting keeps the dict in store order, so the first key is the stalest.
+        self._crm_host_cache.pop(i_customer, None)
+        self._crm_host_cache[i_customer] = (time.monotonic(), host)
+        while len(self._crm_host_cache) > CRM_HOST_CACHE_MAX:
+            self._crm_host_cache.pop(next(iter(self._crm_host_cache)))
+        return Crm(host=host)
+
+    async def _customer_crm_host(self, i_customer: int, field: str) -> Optional[str]:
+        """The customer's own CRM address, or its main office's when it is a branch without one."""
+        # Both at once: a company without an address of its own needs its office type next.
+        values, info = await asyncio.gather(
+            self._admin_api.get_customer_custom_fields_values(i_customer),
+            self._admin_api.get_customer_info(i_customer),
+            return_exceptions=True,
+        )
+        if isinstance(values, BaseException):
+            raise values
+        host = self._crm_host_value(values, field)
+        if host:
+            return host
+        if isinstance(info, BaseException):
+            raise info
+
+        customer_info = info.get("customer_info") or {}
+        main_office = customer_info.get("i_main_office")
+        if customer_info.get("i_office_type") != BRANCH_OFFICE_TYPE or not main_office:
+            return None
+        return self._crm_host_value(await self._admin_api.get_customer_custom_fields_values(int(main_office)), field)
+
+    @classmethod
+    def _crm_host_value(cls, response: dict, field: str) -> Optional[str]:
+        value = cls._custom_field_values(response).get(field)
+        if value is None:
+            return None
+        return str(value).strip() or None
 
     @staticmethod
     def _custom_field_values(response: dict) -> dict:

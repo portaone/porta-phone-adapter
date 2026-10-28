@@ -162,6 +162,7 @@ variables without a default are mandatory — the adapter does not start without
 | `PORTASWITCH_DEFAULT_ACCOUNT_MAX_DEVICES` | no | unset — no limit | See [Device and session limits](#device-and-session-limits-portaswitch) |
 | `PORTASWITCH_DEFAULT_ACCOUNT_MAX_DEVICE_SWITCHES` | no | unset — no limit | See [Device and session limits](#device-and-session-limits-portaswitch) |
 | `PORTASWITCH_DEVICE_LIMITS_CACHE_TTL` | no | `60` | See [Device and session limits](#device-and-session-limits-portaswitch) |
+| `PORTASWITCH_CRM_HOST_CUSTOM_FIELD` | no | empty — not read | See [CRM of the company](#crm-of-the-company-portaswitch) |
 | `OTP_IGNORE_ACCOUNTS` | no | empty | Sign-in identifiers whose OTP is accepted even when PortaBilling rejects the code — test and review accounts only |
 | `OTP_STORAGE_COLLECTION` | no | unset — process memory | Firestore collection that keeps pending OTPs. Unset, they live in the process's memory, which breaks OTP sign-in when more than one instance serves requests |
 | `OTP_STORAGE_TTL_MINUTES` | no | `30` | Firestore only: the `expires_at` written on each pending OTP. Cleanup needs a Firestore TTL policy on that field |
@@ -409,3 +410,23 @@ unset — the account limits take the defaults above, the customer limits stay `
 while whatever the other read returned is still used. A failed read is not cached.
 
 A limit changed in PortaBilling takes effect within `PORTASWITCH_DEVICE_LIMITS_CACHE_TTL`.
+
+## CRM of the company (PortaSwitch)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORTASWITCH_CRM_HOST_CUSTOM_FIELD` | empty — not read | Name of the PortaBilling customer custom field that holds the address of the company's CRM, for example `acme.zendesk.com`. The Add-on Mart deployment sets `CRM host` when the Zendesk integration is on. Empty, nothing is read and `crm` is `null` |
+
+The user info (`GET /user`) carries `crm`, the CRM of the user's company, which Core
+connects the user's dialer to (WT-2109). The address is read from the custom field of the
+account's customer; a branch office whose field is blank takes its main office's address.
+
+- `{"host": "acme.zendesk.com"}` — the company's CRM, as entered in the field;
+- `{"host": null}` — the company has none (the field is missing or blank);
+- `null` — the adapter cannot tell: the lookup is switched off, or the read failed and
+  there is no earlier answer for the company. Core then keeps what it knew.
+
+The answer is reused for 5 minutes per company, so an address changed in PortaBilling
+reaches Core within that time. A read is given 5 seconds, so a switch that does not answer
+costs the CRM address and not the whole user info. A failed read is logged as a warning, serves
+the last answer for the company, however old, and is not tried again for 30 seconds.
