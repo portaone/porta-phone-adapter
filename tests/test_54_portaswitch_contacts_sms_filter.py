@@ -134,7 +134,7 @@ async def test_without_flag_nothing_is_filtered():
     adapter = make_adapter(directory(600, sms_every=20))
     items, total = await fetch(adapter, search="john")
     assert len(items) == 40
-    assert total == 601  # PortaBilling's own total, as before WT-1609
+    assert total == 600  # every match but the requesting user (WT-1921)
     assert {c["limit"] for c in adapter._admin_api.list_calls} == {50}
 
 
@@ -177,13 +177,13 @@ async def test_accounts_search_does_not_widen_when_page_is_full():
 
 
 @pytest.mark.asyncio
-async def test_accounts_search_still_truncated_reports_more_than_a_page():
-    # Over 1000 matches per field even after widening: the total cannot be exact,
-    # but must still say there is more than the page.
+async def test_accounts_search_still_truncated_reports_what_it_can_deliver():
+    # Over 1000 matches per field even after widening: the SMS contacts past the
+    # first 1000 rows cannot be served, so they are not counted either (WT-1921).
     adapter = make_adapter(directory(3000, sms_every=50))
     items, total = await fetch(adapter, search="john", sms_capable=True)
     assert len(items) == 20
-    assert total > 40
+    assert total == 20
 
 
 @pytest.mark.asyncio
