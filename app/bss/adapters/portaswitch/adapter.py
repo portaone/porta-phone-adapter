@@ -1270,6 +1270,7 @@ class PortaSwitchAdapter(BSSAdapter):
                         bool(search) and sms_capable and self._portaswitch_settings.CONTACTS_CACHE_TTL > 0
                     )
                     search_truncated = False
+                    search_fetch_limit = MAX_API_LIMIT
 
                     async def _search_cached_accounts(accounts: list[dict]) -> list[dict]:
                         """The in-memory counterpart of the field queries and the extension and
@@ -1354,16 +1355,16 @@ class PortaSwitchAdapter(BSSAdapter):
 
                         search_truncated = await _run_field_queries(search_fetch_limit)
 
-                        # With sms_capable most matches may have no DID (plain extensions), so a
-                        # bounded round can leave the page short while more SMS contacts exist.
-                        # One more round at the API maximum then, still O(5) parallel calls.
-                        if sms_capable and search_truncated and search_fetch_limit < MAX_API_LIMIT:
-                            sms_matches = sum(
+                        # The limit counts raw rows, pages count filtered ones: when the filters
+                        # leave the page short, one more round at the API maximum fills it.
+                        if search_truncated and search_fetch_limit < MAX_API_LIMIT:
+                            usable_matches = sum(
                                 1 for a in accounts_dict.values()
-                                if _passes_filter(a) and Serializer._parse_sms_numbers(a)
+                                if _passes_filter(a) and (not sms_capable or Serializer._parse_sms_numbers(a))
                             )
-                            if sms_matches <= page * items_per_page:
-                                search_truncated = await _run_field_queries(MAX_API_LIMIT)
+                            if usable_matches <= page * items_per_page:
+                                search_fetch_limit = MAX_API_LIMIT
+                                search_truncated = await _run_field_queries(search_fetch_limit)
 
                         # Also search by extension number (short dial / extension_id)
                         try:
@@ -1470,13 +1471,14 @@ class PortaSwitchAdapter(BSSAdapter):
                     # and items_total always describe the same row set (WT-1774): reporting
                     # PortaBilling's unfiltered total made the client build pages that do not
                     # exist, hence the empty last page.
-                    # In search mode: use the API-reported total (max across fields) as total_count
-                    # rather than len(account_contacts), because the bounded fetch only retrieves
-                    # enough records for the current page — len() would severely undercount.
-                    # With sms_capable the API totals also count accounts without a DID, so they
-                    # stand in only when a field was truncated and the exact count is unknown.
-                    if search and (not sms_capable or search_truncated):
-                        total_count = max(search_total_from_api, len(account_contacts))
+                    # Below the fetch cap only the rows up to this page are in hand, so the total is
+                    # an estimate that never promises more than a field can deliver (WT-1921).
+                    if search_truncated and search_fetch_limit < MAX_API_LIMIT:
+                        dropped = len(accounts) + len(custom_contacts) - len(account_contacts)
+                        total_count = max(
+                            min(search_total_from_api, MAX_API_LIMIT) + len(custom_contacts) - dropped,
+                            len(account_contacts),
+                        )
                     else:
                         total_count = len(account_contacts)
                     start_idx = (page - 1) * items_per_page

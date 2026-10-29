@@ -89,6 +89,9 @@ class FakeAdminAPI:
         self.calls.append({"i_customer": i_customer, "limit": limit, "offset": offset, **search_params})
         assert limit is None or limit <= MAX_API_LIMIT, "PortaBilling rejects limit > 1000"
         rows = self._rows(i_customer)
+        for field, value in search_params.items():
+            needle = value.strip("%").lower()
+            rows = [a for a in rows if needle in str(a.get(field, "")).lower()]
         # Simulate an unstable row order between separate LIMIT/OFFSET queries: a
         # later chunk re-serves the tail of the previous one.
         start = max(0, offset - self.chunk_overlap) if offset else 0
@@ -150,18 +153,20 @@ def make_adapter(raw_accounts, custom_contacts=(), skip_without_extension=False,
     return adapter
 
 
-async def fetch_page(adapter, page, items_per_page):
+async def fetch_page(adapter, page, items_per_page, search=None):
     session = SessionInfo(user_id=str(CURRENT_I_ACCOUNT), access_token='tok', refresh_token='ref')
     user = UserInfo(user_id=str(CURRENT_I_ACCOUNT))
-    return await adapter.retrieve_contacts_v2(session, user, page=page, items_per_page=items_per_page)
+    return await adapter.retrieve_contacts_v2(
+        session, user, search=search, page=page, items_per_page=items_per_page
+    )
 
 
-async def walk_all_pages(adapter, items_per_page):
+async def walk_all_pages(adapter, items_per_page, search=None):
     """Page through the directory the way the dialer does — driven by items_total."""
-    first_items, total = await fetch_page(adapter, 1, items_per_page)
+    first_items, total = await fetch_page(adapter, 1, items_per_page, search)
     pages = [first_items]
     for page in range(2, math.ceil(total / items_per_page) + 1):
-        items, page_total = await fetch_page(adapter, page, items_per_page)
+        items, page_total = await fetch_page(adapter, page, items_per_page, search)
         assert page_total == total, f"items_total changed on page {page}: {page_total} != {total}"
         pages.append(items)
     return pages, total
@@ -171,17 +176,20 @@ def keys(items):
     return [item.user_id.root if hasattr(item.user_id, 'root') else item.user_id for item in items]
 
 
+def passes(account):
+    return (
+        account["i_account"] != CURRENT_I_ACCOUNT
+        and account.get("status") != "blocked"
+        and account.get("dual_version_system") != "source"
+    )
+
+
 # --- items_total describes what the adapter actually delivers ---------------
 
 @pytest.mark.asyncio
 async def test_items_total_equals_deliverable_count():
     raw = build_raw_accounts(90)
-    deliverable = sum(
-        1 for a in raw
-        if a["i_account"] != CURRENT_I_ACCOUNT
-        and a.get("status") != "blocked"
-        and a.get("dual_version_system") != "source"
-    )
+    deliverable = sum(1 for a in raw if passes(a))
     assert deliverable < len(raw), "the fixture must contain filtered-out rows"
 
     for items_per_page in (15, 25, 40):
@@ -397,3 +405,64 @@ async def test_overlapping_chunks_do_not_duplicate_contacts():
 
     assert len(collected) == len(set(collected))
     assert len(collected) == total
+
+
+# --- search: items_total stays within what the bounded fetch can serve (WT-1921) ---
+
+@pytest.mark.asyncio
+async def test_search_over_1000_matches_has_no_empty_pages():
+    # Every row matches firstname: PortaBilling counts 1501, a field serves at most 1000
+    raw = build_raw_accounts(1500, blocked_every=0, source_every=0)
+
+    for items_per_page in (15, 40, 1000):
+        pages, total = await walk_all_pages(make_adapter(raw), items_per_page, search="First")
+        collected = [key for page in pages for key in keys(page)]
+        where = f"items_per_page={items_per_page}"
+
+        assert total == sum(1 for a in raw[:MAX_API_LIMIT] if passes(a)), where
+        assert len(collected) == len(set(collected)) == total, where
+        assert pages[-1], f"{where}: the last page came back empty"
+        for page_items in pages[:-1]:
+            assert len(page_items) == items_per_page, f"{where}: only the last page may be short"
+
+
+@pytest.mark.asyncio
+async def test_search_total_leaves_out_the_requesting_user():
+    # 10 matches in PortaBilling, 9 deliverable: at 3 per page a 4th page would be empty
+    raw = build_raw_accounts(9, blocked_every=0, source_every=0)
+
+    pages, total = await walk_all_pages(make_adapter(raw), 3, search="First")
+
+    assert total == 9
+    assert len(pages) == 3
+    assert all(len(page) == 3 for page in pages)
+
+
+@pytest.mark.asyncio
+async def test_search_with_heavy_filtering_keeps_pages_full():
+    # About 40% of the rows are filtered out, more than FILTER_BUFFER per bounded
+    # round, so each page needs the widened round to be filled
+    raw = build_raw_accounts(1500)
+
+    pages, total = await walk_all_pages(make_adapter(raw), 15, search="First")
+    collected = [key for page in pages for key in keys(page)]
+
+    assert total == sum(1 for a in raw[:MAX_API_LIMIT] if passes(a))
+    assert len(collected) == len(set(collected)) == total
+    assert pages[-1]
+    for page_items in pages[:-1]:
+        assert len(page_items) == 15
+
+
+@pytest.mark.asyncio
+async def test_search_total_counts_matching_custom_contacts():
+    # PortaBilling's count has no custom contacts; while truncated the estimate must add them
+    raw = build_raw_accounts(1500, blocked_every=0, source_every=0)
+    custom = [{"name": "First Aid", "number": "103"}]
+
+    pages, total = await walk_all_pages(make_adapter(raw, custom_contacts=custom), 15, search="First")
+    numbers = [item.numbers.main for page in pages for item in page]
+
+    assert total == sum(1 for a in raw[:MAX_API_LIMIT] if passes(a)) + 1
+    assert numbers.count("103") == 1
+    assert len(numbers) == total
