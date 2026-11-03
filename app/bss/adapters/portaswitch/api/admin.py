@@ -42,6 +42,8 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
         # verify is client-level, not per-request); see AsyncHTTPAPIConnector.
         self._verify_https = portaswitch_settings.VERIFY_HTTPS
         self._verify_https_standby = portaswitch_settings.VERIFY_HTTPS_STANDBY
+        # Admin access tokens of the operating_mode probe, per site URL.
+        self._probe_tokens: dict[str, str] = {}
         if portaswitch_settings.API_TIMEOUT is not None:
             self.DEFAULT_REQUEST_TIMEOUT = portaswitch_settings.API_TIMEOUT
         # httpx connection-pool limits for the shared async client (WT-1720).
@@ -438,39 +440,64 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
         'standalone', 'read_only'). Used to decide when it is safe to switch API
         traffic back to the main site.
 
-        Runs as a throwaway session against the given URL, bypassing the login
-        flow and the shared token cache (SHARED_TOKENS is not touched), so it can
-        probe the main site while normal traffic is served from the standby.
+        Runs on a session of its own per URL, bypassing the login flow and the
+        shared token cache (SHARED_TOKENS is not touched), so it can probe either
+        site while normal traffic is served from the other. The session is kept
+        and reused, because the site monitor probes every few seconds and a login
+        per probe would leave a new admin session on the switch each time; it is
+        replaced only when the site no longer accepts it.
 
         Returns:
             The operating_mode string, OPERATING_MODE_UNKNOWN if the site answered
             without it (older PortaSwitch without BA-47641), or None if the site
             is unreachable.
         """
-        try:
-            login = await AsyncHTTPAPIConnector.send_rest_request(
-                self,
-                method="POST",
-                path="/rest/Session/login",
-                server=server,
-                json={"params": {"login": self._api_user.user_id, "token": self._api_user.token}},
-            )
-            token = login.get("access_token") if isinstance(login, dict) else None
-            if not token:
-                return None
+        tokens = self._probe_tokens
+        for attempt in range(2):
+            try:
+                token = tokens.get(server)
+                if not token:
+                    login = await AsyncHTTPAPIConnector.send_rest_request(
+                        self,
+                        method="POST",
+                        path="/rest/Session/login",
+                        server=server,
+                        json={"params": {"login": self._api_user.user_id, "token": self._api_user.token}},
+                    )
+                    token = login.get("access_token") if isinstance(login, dict) else None
+                    if not token:
+                        return None
+                    tokens[server] = token
 
-            response = await AsyncHTTPAPIConnector.send_rest_request(
-                self,
-                method="POST",
-                path="/rest/Generic/get_session_data",
-                server=server,
-                json={"params": {}},
-                auth_session=OAuthSessionData(access_token=token),
-            )
-            mode = response.get("operating_mode") if isinstance(response, dict) else None
-            return mode or OPERATING_MODE_UNKNOWN
+                response = await AsyncHTTPAPIConnector.send_rest_request(
+                    self,
+                    method="POST",
+                    path="/rest/Generic/get_session_data",
+                    server=server,
+                    json={"params": {}},
+                    auth_session=OAuthSessionData(access_token=token),
+                )
+                mode = response.get("operating_mode") if isinstance(response, dict) else None
+                return mode or OPERATING_MODE_UNKNOWN
+            except WebTritErrorException as error:
+                if attempt == 0 and tokens.get(server) and self._is_session_auth_fault(error):
+                    # The site no longer accepts the kept session: log in again once.
+                    tokens.pop(server, None)
+                    continue
+                return None
+        return None
+
+    @staticmethod
+    def _is_session_auth_fault(error: WebTritErrorException) -> bool:
+        """True if the site answered that it does not accept the session.
+
+        ``extract_fault_code`` re-raises an error that carries no faultcode, as an
+        unreachable site's does; that is simply not an auth fault here.
+        """
+        try:
+            return extract_fault_code(error) in SESSION_AUTH_FAULTS
         except WebTritErrorException:
-            return None
+            return False
 
     async def get_call_recording(self, i_xdr: int) -> Union[dict, tuple[str, AsyncIterator[bytes]]]:
         """Returns the call recording file of any account's call, by its xDR (WT-1993)."""
