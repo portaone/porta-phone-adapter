@@ -3,7 +3,7 @@ from typing import Optional
 
 from bss.adapters.portaswitch.config import PortaSwitchSettings
 from bss.adapters.portaswitch.exceptions import service_read_only_error
-from bss.adapters.portaswitch.failover import READ_ONLY_FAULTS, SESSION_AUTH_FAULTS
+from bss.adapters.portaswitch.failover import OPERATING_MODE_UNKNOWN, READ_ONLY_FAULTS, SESSION_AUTH_FAULTS
 from bss.adapters.portaswitch.types import PortaSwitchAdminUser
 from bss.adapters.portaswitch.utils import extract_fault_code
 from bss.async_http_api import AsyncHTTPAPIConnector, AsyncHTTPAPIConnectorWithLogin, OAuthSessionData
@@ -407,8 +407,9 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
         probe the main site while normal traffic is served from the standby.
 
         Returns:
-            The operating_mode string, or None if the site is unreachable or the
-            field is absent (older PortaSwitch without BA-47641).
+            The operating_mode string, OPERATING_MODE_UNKNOWN if the site answered
+            without it (older PortaSwitch without BA-47641), or None if the site
+            is unreachable.
         """
         try:
             login = await AsyncHTTPAPIConnector.send_rest_request(
@@ -430,7 +431,8 @@ class AdminAPI(AsyncHTTPAPIConnectorWithLogin):
                 json={"params": {}},
                 auth_session=OAuthSessionData(access_token=token),
             )
-            return response.get("operating_mode") if isinstance(response, dict) else None
+            mode = response.get("operating_mode") if isinstance(response, dict) else None
+            return mode or OPERATING_MODE_UNKNOWN
         except WebTritErrorException:
             return None
 
