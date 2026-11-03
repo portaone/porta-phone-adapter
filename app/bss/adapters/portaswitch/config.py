@@ -84,6 +84,13 @@ class PortaSwitchSettings(BaseSettings):
     SITE_RECHECK_INTERVAL: int = 60
     # Consecutive main-site 'normal' probes required to switch back (hysteresis).
     SITE_SWITCH_BACK_THRESHOLD: int = 2
+    # Seconds between site monitor ticks when the sites report operating_mode.
+    # Ticks are aligned to the wall clock, so every replica polls both sites at the
+    # same instant and switches on the same answers.
+    SITE_POLL_INTERVAL: int = 10
+    # Consecutive monitor ticks on which the main site does not answer (or reports
+    # 'secondary') before traffic moves to the secondary site.
+    SITE_MAIN_DOWN_THRESHOLD: int = 3
     SIGNIN_CREDENTIALS: PortaSwitchSignInCredentialsType = PortaSwitchSignInCredentialsType.SELF_CARE
     CONTACTS_SELECTING: PortaSwitchContactsSelectingMode = PortaSwitchContactsSelectingMode.ACCOUNTS
     CONTACTS_SELECTING_EXTENSION_TYPES: Union[List[PortaSwitchExtensionType], str] = list(PortaSwitchExtensionType)
