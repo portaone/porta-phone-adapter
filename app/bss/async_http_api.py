@@ -284,8 +284,8 @@ class AsyncHTTPAPIConnector(ABC):
 
         When DR failover is configured (``site_state`` + ``standby_server``) and
         no explicit ``server`` is given, the request is routed to the active site
-        and, on a main-site timeout / connection error, retried once against the
-        standby. An explicit ``server`` is honored as-is and disables failover.
+        and, on a main-site connection failure, retried once against the standby.
+        A read timeout is not retried: the site is only reported as slow. An explicit ``server`` is honored as-is and disables failover.
         """
         # Note: no 'verify' and no 'stream' key here — verify is client-level in
         # httpx, and streaming is handled via client.send(stream=True) below.
@@ -326,25 +326,31 @@ class AsyncHTTPAPIConnector(ABC):
                 return await self.decode_response(response)
 
             except httpx.HTTPError as e:
-                # A timeout / connection error means the site is unreachable; an
+                # A connect error / connect timeout means the site is unreachable.
+                # A read / write timeout means the site took the request and is slow
+                # with it: no retry on the standby, the site is only re-checked. An
                 # HTTP status error (raise_for_status) means the site answered and
                 # is NOT a failover trigger. PoolTimeout is excluded: it is a local
                 # connection-pool exhaustion event, not a main-site outage, so it
                 # must not flip the active site (it still yields the 408 trace below).
-                connectivity = (
-                    isinstance(e, (httpx.TimeoutException, httpx.ConnectError))
+                unreachable = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout))
+                slow = (
+                    isinstance(e, httpx.TimeoutException)
+                    and not unreachable
                     and not isinstance(e, httpx.PoolTimeout)
                 )
                 if isinstance(e, httpx.PoolTimeout):
                     _record_pool_timeout(base_server)
 
-                if connectivity:
+                if unreachable:
                     self._note_site_unreachable(base_server)
                     if index < last:
                         logging.warning(
                             f"{base_server} unreachable ({e}); failing over to {targets[index + 1]}"
                         )
                         continue
+                elif slow:
+                    self._note_site_slow(base_server, path)
 
                 if isinstance(e, httpx.TimeoutException):
                     logging.debug(f"Connection to {url} timed out")
@@ -402,6 +408,10 @@ class AsyncHTTPAPIConnector(ABC):
     def _note_site_unreachable(self, base_server: str) -> None:
         if self.site_state is not None and base_server == self.api_server:
             self.site_state.report_unreachable()
+
+    def _note_site_slow(self, base_server: str, path: str) -> None:
+        if self.site_state is not None and base_server == self.api_server:
+            self.site_state.report_slow(path)
 
     async def decode_response(self, response) -> dict:
         """Decode the JSON response. Override for custom parsing."""
