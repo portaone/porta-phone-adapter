@@ -6,8 +6,11 @@ When the main PortaSwitch site goes down, the installation switches to standalon
 Detection is reactive and fault-code based (there is no mode-reporting endpoint
 to poll for the *forward* switch — see BA-47610):
 
-* "main site unavailable" is observed as an httpx timeout / connection error
+* "main site unavailable" is observed as an httpx connect error / connect timeout
   against the main site → switch API traffic to the secondary site;
+* a read timeout against the main site only means that one call was slow (a
+  heavy get_xdr_list, WT-2201): the main site is probed out-of-band, and traffic
+  switches only if the probe cannot reach it or it reports `secondary`;
 * the secondary site identifies its mode through fault codes returned on calls
   not allowed in the current mode (used for graceful write degradation).
 
@@ -62,6 +65,8 @@ OPERATING_MODE_NORMAL = "normal"
 OPERATING_MODE_SECONDARY = "secondary"
 OPERATING_MODE_STANDALONE = "standalone"
 OPERATING_MODE_READ_ONLY = "read_only"
+# The site answered but did not report operating_mode (PortaSwitch without BA-47641).
+OPERATING_MODE_UNKNOWN = "unknown"
 
 
 class Site(enum.Enum):
@@ -77,8 +82,9 @@ class SiteState:
     no locking (same rationale as the token storage in ``AsyncHTTPAPIConnector``).
 
     Forward switch (MAIN -> STANDBY): reactive, the request layer calls
-    ``report_unreachable()`` when a main-site request fails with a timeout /
-    connection error.
+    ``report_unreachable()`` when a main-site request fails to connect. A read
+    timeout calls ``report_slow()`` instead, which probes the main site
+    out-of-band and switches only if the probe confirms an outage (WT-2201).
 
     Backward switch (STANDBY -> MAIN): while on standby, user requests are routed
     straight to the standby (never to the dead main), and the main site is probed
@@ -103,6 +109,8 @@ class SiteState:
         self._normal_streak = 0
         self._probe_in_flight = False
         self._probe_task: Optional[asyncio.Task] = None
+        self._confirm_in_flight = False
+        self._confirm_task: Optional[asyncio.Task] = None
         #: async callable returning the main site's operating_mode (or None if
         #: unreachable / not reported). Injected by the adapter after the Admin
         #: connector exists.
@@ -134,6 +142,39 @@ class SiteState:
             logging.warning("PortaSwitch DR: main site unreachable, switching to standby site")
         self._active = Site.STANDBY
         self._normal_streak = 0
+
+    def report_slow(self, path: str) -> None:
+        """Record that a main-site request timed out after the site accepted it.
+
+        Without a probe there is no way to tell a slow site from a dead one, so
+        this falls back to ``report_unreachable()``.
+        """
+        if self._active is not Site.MAIN or self._confirm_in_flight:
+            return
+        if self._probe is None:
+            self.report_unreachable()
+            return
+        logging.warning(f"PortaSwitch DR: main site timed out on {path}, checking whether it is up")
+        self._confirm_in_flight = True
+        try:
+            self._confirm_task = asyncio.get_running_loop().create_task(self._confirm_outage())
+        except RuntimeError:
+            self._confirm_in_flight = False
+
+    async def _confirm_outage(self) -> None:
+        try:
+            try:
+                mode = await self._probe()
+            except Exception as e:
+                logging.warning(f"PortaSwitch DR: main site check failed: {e}")
+                mode = None
+            if mode is None or mode == OPERATING_MODE_SECONDARY:
+                logging.warning(f"PortaSwitch DR: main site check got {mode or 'no answer'}")
+                self.report_unreachable()
+            else:
+                logging.info(f"PortaSwitch DR: main site answers ({mode}), staying on it")
+        finally:
+            self._confirm_in_flight = False
 
     def _maybe_schedule_probe(self) -> None:
         """Kick off a single out-of-band main-site probe if one is due and none is
