@@ -122,9 +122,16 @@ means the documented template to copy does not honour either mechanism.
   once more than 20 were open. One switch, one pool: a budget below the pool size buys
   nothing and costs a handshake per call. `keepalive_expiry` stays at httpx's 5 s and
   is not exposed, so a burst still reconnects after a lull; that is the known residual.
-- **`failover.py`** — disaster-recovery site switching. Detecting that the main site is
-  down is reactive (timeouts), while switching *back* is authoritative
-  (`operating_mode` from `generic.get_session_data`). It also owns the PortaBilling
+- **`failover.py`** — disaster-recovery site switching. When the sites report
+  `operating_mode` (`generic.get_session_data`, BA-47641), a monitor polls both sites on
+  wall-clock aligned ticks (`SITE_POLL_INTERVAL`) and is the only thing that switches:
+  every replica asks at the same instant and gets the same answers, and requests go to
+  the active site only, with no per-request retry on the other one. That matters because
+  the secondary-site session sync (BA-47622) resolves a session used on both sites by
+  last-write-wins, so pods that switched on their own request errors had one session on
+  both sites and lost refresh tokens (WT-2201). Without `operating_mode` the tracker stays
+  reactive: a connect error switches the pod and retries on the standby, a read timeout
+  only probes the main site, and switching *back* waits for `normal`. It also owns the PortaBilling
   fault-code sets both realms read. `SESSION_AUTH_FAULTS` is the one that outlives the
   switch: PortaSwitch sessions are site-local, so after a failover every token the app
   still holds was minted by the other site and is refused. The admin realm logs in again
