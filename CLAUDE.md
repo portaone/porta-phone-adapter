@@ -158,6 +158,12 @@ means the documented template to copy does not honour either mechanism.
   *before* the check. Skipping the check for a row that has `i_master_account` — which the
   adapter did between January and September 2026 — is what let every OTP sign-in by alias
   through the gate (WT-1926). Resolve, never skip.
+  `i_master_account` is not only an alias's: a **beneficiary** (`billing_model` 4, an
+  account with a sponsor) has it too, pointing at the sponsor. A beneficiary signs in as
+  itself - own password, OTP and session - so `authenticate` and `generate_otp` do not
+  resolve it. Its own row already lists the add-ons it inherits from the sponsor (seen
+  on a live switch), so the add-on gate reads that row too. Resolving it like an alias
+  checked the sponsor's password, which has none - `KeyError` and a 500 (WT-2209).
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 
