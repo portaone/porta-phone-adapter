@@ -242,7 +242,7 @@ class PortaSwitchAdapter(BSSAdapter):
     capabilities required by WebTrit clients.
     """
 
-    VERSION: Final[str] = "1.5.0"
+    VERSION: Final[str] = "1.5.1"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
     OTP_LOGIN_IDENTIFIERS = ('phone_number',)
     CAPABILITIES: Final[Capabilities] = [
@@ -320,6 +320,8 @@ class PortaSwitchAdapter(BSSAdapter):
             site_state = SiteState(
                 recheck_interval=self._portaswitch_settings.SITE_RECHECK_INTERVAL,
                 switch_back_threshold=self._portaswitch_settings.SITE_SWITCH_BACK_THRESHOLD,
+                poll_interval=self._portaswitch_settings.SITE_POLL_INTERVAL,
+                main_down_threshold=self._portaswitch_settings.SITE_MAIN_DOWN_THRESHOLD,
             )
             if self._portaswitch_settings.VERIFY_HTTPS_STANDBY is False:
                 logging.warning(
@@ -345,11 +347,14 @@ class PortaSwitchAdapter(BSSAdapter):
         self._account_api = AccountAPI(self._portaswitch_settings, site_state=site_state)
 
         if site_state is not None:
-            # Out-of-band switch-back probe: read the main site's operating_mode
-            # (BA-47641) via the admin connector, without touching live traffic.
+            # Out-of-band probes: read each site's operating_mode (BA-47641) via the
+            # admin connector, without touching live traffic. The main-site probe
+            # also drives the reactive switch-back; with both set, the site monitor
+            # runs and takes over when the sites report a mode.
             site_state.set_probe(
                 lambda: self._admin_api.get_operating_mode(self._portaswitch_settings.ADMIN_API_URL)
             )
+            site_state.set_standby_probe(lambda: self._admin_api.get_operating_mode(admin_standby))
         self._sip_server = SipServer(
             host=self._portaswitch_settings.SIP_SERVER_HOST, port=self._portaswitch_settings.SIP_SERVER_PORT
         )
