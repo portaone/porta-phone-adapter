@@ -175,6 +175,16 @@ ACCOUNTS_CACHE_STALE_FACTOR: Final[int] = 10
 #: Deliberately not configurable — the `evicted` counter says if it ever bites.
 ACCOUNTS_CACHE_MAX_ROWS: Final[int] = 100_000
 
+#: int: AccountInfo.billing_model of a beneficiary account, one that has a sponsor.
+#: PortaBilling fills i_master_account for it too - with the sponsor, not a master
+#: as for an alias (billing_model 2) - so the two must not be confused (WT-2209).
+BILLING_MODEL_BENEFICIARY: Final[int] = 4
+
+
+def _is_beneficiary(account_info: dict) -> bool:
+    """Tell a beneficiary row, whose i_master_account is its sponsor, from an alias."""
+    return account_info.get("billing_model") == BILLING_MODEL_BENEFICIARY
+
 
 def _record_cache_event(event: str) -> None:
     """Count one account-list cache outcome (WT-1922).
@@ -467,8 +477,11 @@ class PortaSwitchAdapter(BSSAdapter):
 
             account_info = (await self._admin_api.get_account_info(**{login_attr: user.login})).get("account_info")
 
-            # If the provided identifier refers to an alias, resolve to the master account
-            if account_info and (master_id := account_info.get("i_master_account")):
+            # If the provided identifier refers to an alias, resolve to the master account.
+            # A beneficiary signs in as itself: its i_master_account is its sponsor (WT-2209).
+            if account_info and not _is_beneficiary(account_info) and (
+                master_id := account_info.get("i_master_account")
+            ):
                 account_info = (await self._admin_api.get_account_info(i_account=master_id)).get("account_info")
 
             if not account_info or account_info[password_attr] != password:
@@ -528,8 +541,9 @@ class PortaSwitchAdapter(BSSAdapter):
 
             # If the provided identifier refers to an alias, resolve to the master account,
             # as authenticate does: add-ons are assigned to the master, and the OTP has to
-            # be created for it as well (WT-1926).
-            if master_id := account_info.get("i_master_account"):
+            # be created for it as well (WT-1926). A beneficiary is not resolved: the OTP
+            # is its own, and its row already carries the add-ons it inherits (WT-2209).
+            if not _is_beneficiary(account_info) and (master_id := account_info.get("i_master_account")):
                 account_info = (await self._admin_api.get_account_info(i_account=master_id)).get("account_info")
                 if not account_info:
                     raise not_found_user_error(user.user_id)
