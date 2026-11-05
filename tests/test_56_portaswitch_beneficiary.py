@@ -5,7 +5,8 @@ account, and for a beneficiary (`billing_model` 4), where it points at the spons
 the alias is resolved to its master. A beneficiary signs in with its own credentials and
 the session and OTP are its own. Its row already carries the add-ons it inherits from the
 sponsor, as seen on a live switch, so ALLOWED_ADDONS is checked on that row and the
-sponsor is never looked up.
+sponsor is never looked up. Its device limits are custom fields of its own, not inherited,
+so they are read from the beneficiary too.
 """
 
 import os
@@ -35,6 +36,7 @@ SPONSOR_I_ACCOUNT = 160
 SPONSOR_ID = "551131640000"
 BENEFICIARY_I_ACCOUNT = 161
 BENEFICIARY_ID = "551131648398"
+ALIAS_ID = "551131648399"
 PASSWORD = "beneficiary-secret"
 
 
@@ -65,11 +67,24 @@ def beneficiary(addons=(ALLOWED_ADDON,)):
     }
 
 
+def alias_of_beneficiary():
+    """An alias of the beneficiary: no fields of its own, i_master_account is the beneficiary."""
+    return {
+        "i_account": 162,
+        "id": ALIAS_ID,
+        "login": ALIAS_ID,
+        "billing_model": 2,
+        "i_master_account": BENEFICIARY_I_ACCOUNT,
+    }
+
+
 class FakeAdminAPI:
-    def __init__(self, accounts):
+    def __init__(self, accounts, account_fields=None):
         self._accounts = accounts
+        self._account_fields = account_fields or {}
         self.lookups = []
         self.created_otps = []
+        self.account_field_reads = []
 
     async def get_account_info(self, **params):
         self.lookups.append(params)
@@ -77,7 +92,9 @@ class FakeAdminAPI:
         return {"account_info": self._accounts.get(str(key))}
 
     async def get_account_custom_fields_values(self, i_account):
-        return {"custom_fields_values": []}
+        self.account_field_reads.append(i_account)
+        values = self._account_fields.get(i_account, {})
+        return {"custom_fields_values": [{"name": name, "db_value": value} for name, value in values.items()]}
 
     async def get_customer_custom_fields_values(self, i_customer):
         return {"custom_fields_values": []}
@@ -113,12 +130,17 @@ class FakeOTPStorage:
         self.stored.append((i_account, user_id))
 
 
-def adapter(addons=(ALLOWED_ADDON,), allowed_addons=(ALLOWED_ADDON,)):
-    accounts = {BENEFICIARY_ID: beneficiary(addons), str(SPONSOR_I_ACCOUNT): sponsor()}
+def adapter(addons=(ALLOWED_ADDON,), allowed_addons=(ALLOWED_ADDON,), account_fields=None):
+    accounts = {
+        BENEFICIARY_ID: beneficiary(addons),
+        str(BENEFICIARY_I_ACCOUNT): beneficiary(addons),
+        ALIAS_ID: alias_of_beneficiary(),
+        str(SPONSOR_I_ACCOUNT): sponsor(),
+    }
     subject = object.__new__(PortaSwitchAdapter)
     subject._init_device_limits_cache_state()
     subject._init_env_email_cache_state()
-    subject._admin_api = FakeAdminAPI(accounts)
+    subject._admin_api = FakeAdminAPI(accounts, account_fields)
     subject._account_api = FakeAccountAPI()
     subject._otp_storage = FakeOTPStorage()
     subject._portaswitch_settings = types.SimpleNamespace(
@@ -132,8 +154,8 @@ def adapter(addons=(ALLOWED_ADDON,), allowed_addons=(ALLOWED_ADDON,)):
     return subject
 
 
-async def sign_in(subject, password=PASSWORD):
-    return await subject.authenticate(UserInfo(user_id="N/A", login=BENEFICIARY_ID), password)
+async def sign_in(subject, password=PASSWORD, login=BENEFICIARY_ID):
+    return await subject.authenticate(UserInfo(user_id="N/A", login=login), password)
 
 
 class TestPasswordSignIn:
@@ -203,3 +225,54 @@ class TestOTPSignIn:
         await subject.generate_otp(UserInfo(user_id=BENEFICIARY_ID))
 
         assert subject._admin_api.lookups == [{"id": BENEFICIARY_ID}]
+
+
+class TestDeviceLimits:
+    @pytest.mark.asyncio
+    async def test_its_own_limits_apply_not_the_sponsors(self):
+        # QA's case: beneficiary 1 device, sponsor 7 - the session used to get 7.
+        subject = adapter(
+            allowed_addons=(),
+            account_fields={
+                BENEFICIARY_I_ACCOUNT: {"portaphone_max_devices": "1"},
+                SPONSOR_I_ACCOUNT: {"portaphone_max_devices": "7"},
+            },
+        )
+
+        session = await sign_in(subject)
+
+        assert session.account_max_devices == 1
+        assert subject._admin_api.account_field_reads == [BENEFICIARY_I_ACCOUNT]
+        assert {"i_account": SPONSOR_I_ACCOUNT} not in subject._admin_api.lookups
+
+    @pytest.mark.asyncio
+    async def test_a_sponsor_without_a_limit_does_not_lift_its_own(self):
+        subject = adapter(
+            allowed_addons=(),
+            account_fields={
+                BENEFICIARY_I_ACCOUNT: {"portaphone_max_devices": "1"},
+                SPONSOR_I_ACCOUNT: {"portaphone_max_devices": "0"},
+            },
+        )
+
+        session = await sign_in(subject)
+
+        assert session.account_max_devices == 1
+
+    @pytest.mark.asyncio
+    async def test_an_alias_of_a_beneficiary_gets_the_beneficiarys_limits(self):
+        # One hop lands on the beneficiary, which then keeps its own limits.
+        subject = adapter(
+            allowed_addons=(),
+            account_fields={
+                BENEFICIARY_I_ACCOUNT: {"portaphone_max_devices": "1"},
+                SPONSOR_I_ACCOUNT: {"portaphone_max_devices": "7"},
+            },
+        )
+
+        session = await sign_in(subject, login=ALIAS_ID)
+
+        assert session.user_id.root == str(BENEFICIARY_I_ACCOUNT)
+        assert session.account_max_devices == 1
+        assert subject._admin_api.lookups == [{"login": ALIAS_ID}, {"i_account": BENEFICIARY_I_ACCOUNT}]
+        assert subject._admin_api.account_field_reads == [BENEFICIARY_I_ACCOUNT]
