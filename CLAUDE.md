@@ -180,6 +180,19 @@ before WT-1963: it still downloads, and the transcript answers 404 rather than
 guessing. Do not "simplify" this back to `str(i_xdr)` — that silently removes the only
 path to a transcript.
 
+### Whether a call has a recording depends on the release
+
+From MR129 on, `get_xdr_list` no longer sets `bit_flags` bit 64 for a recorded call
+(IUN-1014), and the only signal is `cr_download_ids`, returned only for
+`with_cr_download_ids=1` (WT-1939). On earlier releases that flag is documented and
+works, but makes the request 50-300 times slower (MR120: 0.2 s → 20-60 s), which
+pushed history into the timeout and filled Core's pool to the adapter (WT-2241).
+So `retrieve_calls` reads `Generic/get_version` (cached an hour, a failure a minute)
+and sends the flag only from MR129 on; before it, it reads bit 64 as the adapter did
+before WT-1939. Do not send the flag unconditionally again, and do not read bit 64 on
+MR129+ — there it is stale. An unreadable version falls back to the flag: correct
+everywhere, slow only on old releases.
+
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 
 PortaBilling exposes exactly five mailbox calls (`api/account.py`):
