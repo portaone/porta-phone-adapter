@@ -25,6 +25,12 @@ def not_found_user_error(user_id: str):
     return WebTritErrorException(404, f"There is no an account with such id: {user_id}")
 
 
+def ambiguous_user_error():
+    return WebTritErrorException(
+        422, "More than one account has this email; sign in with the account id", "ambiguous_user_ref"
+    )
+
+
 def not_found_contact_error(contact_id: str):
     return WebTritErrorException(404, f"There is no an account with such id: {contact_id}", "contact_not_found")
 

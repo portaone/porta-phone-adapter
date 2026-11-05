@@ -77,6 +77,7 @@ from .exceptions import (
     not_found_recording_link_error,
     expired_recording_link_error,
     not_found_linked_transcription_error,
+    ambiguous_user_error,
 )
 from .recording_link import RecordingLinkExpired, RecordingLinkInvalid, RecordingLinkSigner
 from .serializer import Serializer
@@ -197,6 +198,31 @@ ACCOUNTS_CACHE_MAX_ROWS: Final[int] = 100_000
 BILLING_MODEL_BENEFICIARY: Final[int] = 4
 
 
+#: A sign-in identifier that may be an email; anything else is never looked up by email.
+#: `%` is refused: the lookup is an unauthenticated LIKE search across every customer,
+#: and `%@%` would list them all. `_` stays, real addresses carry it.
+_EMAIL_RE: Final = re.compile(r"^[^@\s,%]+@[^@\s,%]+\.[^@\s,%]+$")
+
+
+#: Candidate rows read per Account/get_account_list page by the email lookup, and the
+#: most it reads for one address before refusing rather than picking from a partial list.
+EMAIL_LOOKUP_PAGE: Final[int] = 1000
+EMAIL_LOOKUP_MAX_ROWS: Final[int] = 10000
+
+
+def _has_email(account_row: dict, email: str) -> bool:
+    r"""Tell whether the row's email field holds `email`, compared without case.
+
+    The field may list several addresses separated by commas, and an entry may be in
+    the `Name <address>` form. The rule is PortaBilling's own for its password-reset
+    lookup (`$_EMAIL_REGEXP_FMT` in Porta/PasswordsRole.pm): `(^|,)\s*ADDR\s*(,|$)` or
+    `<\s*ADDR\s*>`.
+    """
+    address = re.escape(email)
+    pattern = rf"(?:^|,)\s*{address}\s*(?:,|$)|<\s*{address}\s*>"
+    return re.search(pattern, account_row.get("email") or "", re.IGNORECASE) is not None
+
+
 def _is_beneficiary(account_info: dict) -> bool:
     """Tell a beneficiary row, whose i_master_account is its sponsor, from an alias."""
     return account_info.get("billing_model") == BILLING_MODEL_BENEFICIARY
@@ -270,7 +296,9 @@ class PortaSwitchAdapter(BSSAdapter):
 
     VERSION: Final[str] = "1.5.3"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
-    OTP_LOGIN_IDENTIFIERS = ('phone_number',)
+    # Served in /system-info; the apps pick the sign-in field's wording and keyboard from
+    # it. An email is accepted too, looked up when no account has it as its id (WT-2212).
+    OTP_LOGIN_IDENTIFIERS = ('phone_number', 'email')
     CAPABILITIES: Final[Capabilities] = [
         Capabilities.signup,
         Capabilities.otpSignin,
@@ -603,6 +631,8 @@ class PortaSwitchAdapter(BSSAdapter):
             )
             account_info = account_resp.get("account_info")
             if not account_info:
+                account_info = await self._find_account_by_email(user.user_id)
+            if not account_info:
                 raise not_found_user_error(user.user_id)
 
             # If the provided identifier refers to an alias, resolve to the master account,
@@ -642,6 +672,57 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise delivery_channel_unspecified_error()
 
             raise error
+
+    async def _find_account_by_email(self, user_ref: str) -> Optional[dict]:
+        """Resolve an OTP sign-in identifier that is no account id as the account's email (WT-2212).
+
+        An id match always wins, so this runs only after that lookup found nothing: in
+        PortaBilling an account id can itself be an address. Exactly one open account
+        must carry the email. With none the caller answers 404; with several no account
+        is picked and the sign-in is refused, so no code is sent to anyone.
+
+        The email filter is a LIKE pattern, so its rows are candidates only, and a common
+        address can have more of them than one page holds. The pages are read until they
+        run out, stopping at a second exact match; past EMAIL_LOOKUP_MAX_ROWS the
+        sign-in is refused instead of picking an account from a partial list.
+
+        get_account_list leaves out assigned_addons, so the match is read again with
+        get_account_info: the alias resolution and the add-on gate need the full row.
+
+        Returns:
+            Optional[dict]: The matching account_info, or None when nothing matches or
+                the identifier is no address.
+
+        Raises:
+            WebTritErrorException: 422 ambiguous_user_ref when several accounts match,
+                or when there are too many candidates to tell.
+        """
+        email = user_ref.strip()
+        if not _EMAIL_RE.match(email):
+            return None
+
+        matches = set()
+        offset = 0
+        while True:
+            resp = await self._admin_api.find_accounts_by_email(email, limit=EMAIL_LOOKUP_PAGE, offset=offset)
+            rows = resp.get("account_list") or []
+            matches.update(row["i_account"] for row in rows if _has_email(row, email))
+            if len(matches) > 1:
+                logging.info(f"OTP sign-in by email refused: {len(matches)} accounts share the address")
+                raise ambiguous_user_error()
+
+            offset += len(rows)
+            total = resp.get("total")
+            if len(rows) < EMAIL_LOOKUP_PAGE or (total is not None and offset >= int(total)):
+                break
+            if offset >= EMAIL_LOOKUP_MAX_ROWS:
+                logging.warning(f"OTP sign-in by email refused: more than {offset} candidate accounts")
+                raise ambiguous_user_error()
+
+        if not matches:
+            return None
+
+        return (await self._admin_api.get_account_info(i_account=matches.pop())).get("account_info")
 
     async def validate_otp(self, otp: OTPVerifyRequest) -> SessionInfo:
         """Validates the OTP code provided by the user and creates a session.
