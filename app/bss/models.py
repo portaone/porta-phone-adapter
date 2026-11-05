@@ -150,7 +150,7 @@ class GetUserContactListUnauthorizedErrorResponse(ErrorResponse):
 class CreateSessionOtpUnprocessableEntityErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
-        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `delivery_channel_unspecified`",
+        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `delivery_channel_unspecified`\n- `ambiguous_user_ref`",
     )
 
 
