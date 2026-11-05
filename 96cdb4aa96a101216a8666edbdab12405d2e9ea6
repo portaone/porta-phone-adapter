@@ -18,6 +18,24 @@
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "9a993f8d_ff79df88",
+        "filename": "README.md",
+        "patchSetId": 1
+      },
+      "lineNbr": 402,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-05T10:48:29Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "d394198a_6d18d14c",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "2004b89e_b6222ba5",
@@ -31,6 +49,24 @@
       "writtenOn": "2026-11-05T09:33:46Z",
       "side": 1,
       "message": "The email field is split only on commas, so `John Doe \u003cjohn@ifonica.example\u003e` never matches and that subscriber gets a 404. PortaBilling\u0027s own email lookup for password reset accepts both forms: `(^|,)\\s*ADDR\\s*(,|$)` or `\u003c\\s*ADDR\\s*\u003e` (`Porta/PasswordsRole.pm`, `$_EMAIL_REGEXP_FMT`). Please use the same rule here: take the address from inside `\u003c…\u003e` when it is there, then compare it without case. Please also add a test for that form.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "234fcf80_e203249c",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 211,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-05T10:48:29Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "2004b89e_b6222ba5",
       "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
@@ -52,6 +88,24 @@
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "aaeac60e_1f539f5f",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 213,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-05T10:48:29Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "3f1efb2e_788eada7",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "bcdbd42f_e85de8be",
@@ -65,6 +119,24 @@
       "writtenOn": "2026-11-05T09:33:46Z",
       "side": 1,
       "message": "`OTP_LOGIN_IDENTIFIERS` still advertises only `(\u0027phone_number\u0027,)`, and `/system-info` hands this to the clients (`main.py:490`). The mobile app picks its sign-in UI from it (`otp_signin_identifier.dart`): with phone only it shows \"Enter your phone number\", a text keyboard, phone autofill and the phone wording for `delivery_channel_unspecified`. The adapter now accepts an email, but Ifonica users will be told to type a phone number, so requirement 1 of WT-2212 is not met end to end.\n\nPlease advertise `(\u0027phone_number\u0027, \u0027email\u0027)`. If showing \"phone or email\" on every PortaSwitch tenant is not wanted, make it a setting. In that case the \"no switch\" note in CLAUDE.md/README needs updating.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "69ff36a8_3e94b35d",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 290,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-05T10:48:29Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "bcdbd42f_e85de8be",
       "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
@@ -86,6 +158,24 @@
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "ce1435ce_c620be71",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 649,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-05T10:48:29Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "0f1189c8_18bb7771",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "2775b3f9_d3a2e4b0",
@@ -99,6 +189,24 @@
       "writtenOn": "2026-11-05T09:33:46Z",
       "side": 1,
       "message": "`ambiguous_user_ref` is new and no client handles it yet. It is missing from the mobile app\u0027s `login_error_notification.dart` map and from the web-app i18n, so users will see a generic error. Please open follow-up tickets for mobile-app and web-app and link them to WT-2212.\n\nAlso note that 404, 422 and 200 now tell an unauthenticated caller whether an email is registered and whether it is shared. The id flow already does this for ids, so this is not a blocker, but it\u0027s worth a line in the ticket, since emails are more sensitive than phone numbers.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2614a659_3568a349",
+        "filename": "app/bss/adapters/portaswitch/exceptions.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 28,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-05T10:48:29Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "2775b3f9_d3a2e4b0",
       "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     }
