@@ -84,6 +84,20 @@ from .otp_storage import configure_otp_storage
 from .utils import generate_otp_id, extract_fault_code, generate_hash_dictionary, encrypt_secret, decrypt_secret
 
 PORTASWITCH_VERSION_WITH_TOKEN: Final[str] = "MR128"
+#: str: First release whose get_xdr_list no longer sets bit_flags bit 64 for a recorded
+#: call (IUN-1014), so recordings can only be seen through with_cr_download_ids (WT-1939).
+#: Earlier releases keep the bit, and there the flag makes the request 50-300 times
+#: slower (WT-2241), so it is sent only from this release on.
+PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS: Final[str] = "MR129"
+#: int: Seconds to reuse the PortaSwitch version read for call history. Long enough that
+#: history pays no admin round trip per request, short enough that an MR upgrade or a
+#: switch to a DR site on another release is picked up within the hour, without a restart.
+PORTASWITCH_VERSION_CACHE_TTL: Final[int] = 3600
+#: int: Seconds before a failed version read is tried again.
+PORTASWITCH_VERSION_RETRY_AFTER: Final[int] = 60
+#: int: Seconds the version read may take. It runs inside a history request, so an admin
+#: realm that hangs must not hold that request for the whole API timeout.
+PORTASWITCH_VERSION_READ_TIMEOUT: Final[int] = 5
 
 #: str: Raised by CallControl.get_sip_calls_list when the API session has no call state
 #: subscription for the requested scope yet.
@@ -220,7 +234,7 @@ class PortaSwitchAdapter(BSSAdapter):
     capabilities required by WebTrit clients.
     """
 
-    VERSION: Final[str] = "1.3.3"
+    VERSION: Final[str] = "1.3.4"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
     OTP_LOGIN_IDENTIFIERS = ('phone_number',)
     CAPABILITIES: Final[Capabilities] = [
@@ -327,6 +341,7 @@ class PortaSwitchAdapter(BSSAdapter):
 
         self._init_call_queue_state()
         self._init_contacts_cache_state()
+        self._init_portaswitch_version_cache_state()
 
         self._otp_storage = configure_otp_storage(self._otp_settings)
         self._cached_capabilities = self.calculate_capabilities()
@@ -357,6 +372,55 @@ class PortaSwitchAdapter(BSSAdapter):
         # In-flight background refreshes, kept referenced: the event loop only
         # holds a weak reference to a task.
         self._accounts_refresh_tasks: Dict[int, asyncio.Task] = {}
+
+    def _init_portaswitch_version_cache_state(self) -> None:
+        """Sets up the cache of the PortaSwitch release read for call history (WT-2241).
+
+        Its own method for the same reason as _init_call_queue_state: tests that
+        bypass __init__ still get the real attributes.
+        """
+        # (monotonic ts, release as a list of ints, or None when the read failed).
+        self._portaswitch_version_cache: Optional[tuple] = None
+
+    async def _portaswitch_release(self) -> Optional[List[int]]:
+        """Returns the PortaSwitch release as a list of ints ("MR120-3" -> [120, 3]),
+        or None when Generic/get_version cannot be read or holds no number.
+
+        Cached for PORTASWITCH_VERSION_CACHE_TTL; a failure for
+        PORTASWITCH_VERSION_RETRY_AFTER, so a switch that does not answer is not asked
+        again on every history request.
+        """
+        cached = self._portaswitch_version_cache
+        if cached is not None:
+            ttl = PORTASWITCH_VERSION_CACHE_TTL if cached[1] is not None else PORTASWITCH_VERSION_RETRY_AFTER
+            if time.monotonic() - cached[0] < ttl:
+                return cached[1]
+
+        release = None
+        try:
+            version = await asyncio.wait_for(self._admin_api.get_version(), PORTASWITCH_VERSION_READ_TIMEOUT)
+            release = [int(d) for d in re.findall(r"\d+", version or "")] or None
+            if release is None:
+                logging.warning(f"Generic/get_version returned no release number: {version!r}")
+        except Exception as e:
+            logging.warning(f"Failed to read the PortaSwitch version from Generic/get_version: {e!r}")
+
+        self._portaswitch_version_cache = (time.monotonic(), release)
+        return release
+
+    async def _recordings_by_cr_download_ids(self) -> bool:
+        """Tells how call history detects a recorded call (WT-2241).
+
+        From PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS on, by the cr_download_ids that
+        get_xdr_list returns only for with_cr_download_ids=1: bit_flags bit 64 is not
+        set there anymore (WT-1939). Before that release, by bit 64, without the flag,
+        which slows the request down 50-300 times there. When the version cannot be
+        read, by cr_download_ids: correct on every release, only slow on old ones.
+        """
+        release = await self._portaswitch_release()
+        if release is None:
+            return True
+        return release >= [int(d) for d in re.findall(r"\d+", PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS)]
 
     @classmethod
     def name(cls) -> str:
@@ -1592,15 +1656,19 @@ class PortaSwitchAdapter(BSSAdapter):
         try:
             time_from, time_to = self._call_history_range(time_from, time_to)
 
+            by_cr_download_ids = await self._recordings_by_cr_download_ids()
             result: dict = await self._account_api.get_xdr_list(
                 access_token=safely_extract_scalar_value(session.access_token),
                 page=page,
                 items_per_page=items_per_page,
                 time_from=time_from,
                 time_to=time_to,
+                with_cr_download_ids=by_cr_download_ids,
             )
 
-            return [Serializer.get_cdr_info(cdr) for cdr in result["xdr_list"]], result["total"]
+            return [
+                Serializer.get_cdr_info(cdr, by_cr_download_ids=by_cr_download_ids) for cdr in result["xdr_list"]
+            ], result["total"]
 
         except WebTritErrorException as error:
             fault_code = extract_fault_code(error)
