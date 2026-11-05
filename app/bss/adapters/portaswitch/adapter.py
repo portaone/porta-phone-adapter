@@ -77,6 +77,7 @@ from .exceptions import (
     not_found_recording_link_error,
     expired_recording_link_error,
     not_found_linked_transcription_error,
+    ambiguous_user_error,
 )
 from .recording_link import RecordingLinkExpired, RecordingLinkInvalid, RecordingLinkSigner
 from .serializer import Serializer
@@ -92,6 +93,20 @@ from .otp_storage import configure_otp_storage
 from .utils import generate_otp_id, extract_fault_code, generate_hash_dictionary, encrypt_secret, decrypt_secret
 
 PORTASWITCH_VERSION_WITH_TOKEN: Final[str] = "MR128"
+#: str: First release whose get_xdr_list no longer sets bit_flags bit 64 for a recorded
+#: call (IUN-1014), so recordings can only be seen through with_cr_download_ids (WT-1939).
+#: Earlier releases keep the bit, and there the flag makes the request 50-300 times
+#: slower (WT-2241), so it is sent only from this release on.
+PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS: Final[str] = "MR129"
+#: int: Seconds to reuse the PortaSwitch version read for call history. Long enough that
+#: history pays no admin round trip per request, short enough that an MR upgrade or a
+#: switch to a DR site on another release is picked up within the hour, without a restart.
+PORTASWITCH_VERSION_CACHE_TTL: Final[int] = 3600
+#: int: Seconds before a failed version read is tried again.
+PORTASWITCH_VERSION_RETRY_AFTER: Final[int] = 60
+#: int: Seconds the version read may take. It runs inside a history request, so an admin
+#: realm that hangs must not hold that request for the whole API timeout.
+PORTASWITCH_VERSION_READ_TIMEOUT: Final[int] = 5
 
 #: str: Raised by CallControl.get_sip_calls_list when the API session has no call state
 #: subscription for the requested scope yet.
@@ -183,6 +198,31 @@ ACCOUNTS_CACHE_MAX_ROWS: Final[int] = 100_000
 BILLING_MODEL_BENEFICIARY: Final[int] = 4
 
 
+#: A sign-in identifier that may be an email; anything else is never looked up by email.
+#: `%` is refused: the lookup is an unauthenticated LIKE search across every customer,
+#: and `%@%` would list them all. `_` stays, real addresses carry it.
+_EMAIL_RE: Final = re.compile(r"^[^@\s,%]+@[^@\s,%]+\.[^@\s,%]+$")
+
+
+#: Candidate rows read per Account/get_account_list page by the email lookup, and the
+#: most it reads for one address before refusing rather than picking from a partial list.
+EMAIL_LOOKUP_PAGE: Final[int] = 1000
+EMAIL_LOOKUP_MAX_ROWS: Final[int] = 10000
+
+
+def _has_email(account_row: dict, email: str) -> bool:
+    r"""Tell whether the row's email field holds `email`, compared without case.
+
+    The field may list several addresses separated by commas, and an entry may be in
+    the `Name <address>` form. The rule is PortaBilling's own for its password-reset
+    lookup (`$_EMAIL_REGEXP_FMT` in Porta/PasswordsRole.pm): `(^|,)\s*ADDR\s*(,|$)` or
+    `<\s*ADDR\s*>`.
+    """
+    address = re.escape(email)
+    pattern = rf"(?:^|,)\s*{address}\s*(?:,|$)|<\s*{address}\s*>"
+    return re.search(pattern, account_row.get("email") or "", re.IGNORECASE) is not None
+
+
 def _is_beneficiary(account_info: dict) -> bool:
     """Tell a beneficiary row, whose i_master_account is its sponsor, from an alias."""
     return account_info.get("billing_model") == BILLING_MODEL_BENEFICIARY
@@ -254,9 +294,11 @@ class PortaSwitchAdapter(BSSAdapter):
     capabilities required by WebTrit clients.
     """
 
-    VERSION: Final[str] = "1.5.3"
+    VERSION: Final[str] = "1.5.4"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
-    OTP_LOGIN_IDENTIFIERS = ('phone_number',)
+    # Served in /system-info; the apps pick the sign-in field's wording and keyboard from
+    # it. An email is accepted too, looked up when no account has it as its id (WT-2212).
+    OTP_LOGIN_IDENTIFIERS = ('phone_number', 'email')
     CAPABILITIES: Final[Capabilities] = [
         Capabilities.signup,
         Capabilities.otpSignin,
@@ -375,6 +417,7 @@ class PortaSwitchAdapter(BSSAdapter):
         self._init_contacts_cache_state()
         self._init_env_email_cache_state()
         self._init_device_limits_cache_state()
+        self._init_portaswitch_version_cache_state()
 
         self._otp_storage = configure_otp_storage(self._otp_settings)
         self._cached_capabilities = self.calculate_capabilities()
@@ -425,6 +468,55 @@ class PortaSwitchAdapter(BSSAdapter):
         # Kept apart because one customer read serves every account of that customer.
         self._account_limits_cache: Dict[int, tuple] = {}
         self._customer_limits_cache: Dict[int, tuple] = {}
+
+    def _init_portaswitch_version_cache_state(self) -> None:
+        """Sets up the cache of the PortaSwitch release read for call history (WT-2241).
+
+        Its own method for the same reason as _init_call_queue_state: tests that
+        bypass __init__ still get the real attributes.
+        """
+        # (monotonic ts, release as a list of ints, or None when the read failed).
+        self._portaswitch_version_cache: Optional[tuple] = None
+
+    async def _portaswitch_release(self) -> Optional[List[int]]:
+        """Returns the PortaSwitch release as a list of ints ("MR120-3" -> [120, 3]),
+        or None when Generic/get_version cannot be read or holds no number.
+
+        Cached for PORTASWITCH_VERSION_CACHE_TTL; a failure for
+        PORTASWITCH_VERSION_RETRY_AFTER, so a switch that does not answer is not asked
+        again on every history request.
+        """
+        cached = self._portaswitch_version_cache
+        if cached is not None:
+            ttl = PORTASWITCH_VERSION_CACHE_TTL if cached[1] is not None else PORTASWITCH_VERSION_RETRY_AFTER
+            if time.monotonic() - cached[0] < ttl:
+                return cached[1]
+
+        release = None
+        try:
+            version = await asyncio.wait_for(self._admin_api.get_version(), PORTASWITCH_VERSION_READ_TIMEOUT)
+            release = [int(d) for d in re.findall(r"\d+", version or "")] or None
+            if release is None:
+                logging.warning(f"Generic/get_version returned no release number: {version!r}")
+        except Exception as e:
+            logging.warning(f"Failed to read the PortaSwitch version from Generic/get_version: {e!r}")
+
+        self._portaswitch_version_cache = (time.monotonic(), release)
+        return release
+
+    async def _recordings_by_cr_download_ids(self) -> bool:
+        """Tells how call history detects a recorded call (WT-2241).
+
+        From PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS on, by the cr_download_ids that
+        get_xdr_list returns only for with_cr_download_ids=1: bit_flags bit 64 is not
+        set there anymore (WT-1939). Before that release, by bit 64, without the flag,
+        which slows the request down 50-300 times there. When the version cannot be
+        read, by cr_download_ids: correct on every release, only slow on old ones.
+        """
+        release = await self._portaswitch_release()
+        if release is None:
+            return True
+        return release >= [int(d) for d in re.findall(r"\d+", PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS)]
 
     async def _notification_email(self) -> Optional[str]:
         """Returns the email OTP codes are sent from, or None if it cannot be read.
@@ -539,6 +631,8 @@ class PortaSwitchAdapter(BSSAdapter):
             )
             account_info = account_resp.get("account_info")
             if not account_info:
+                account_info = await self._find_account_by_email(user.user_id)
+            if not account_info:
                 raise not_found_user_error(user.user_id)
 
             # If the provided identifier refers to an alias, resolve to the master account,
@@ -578,6 +672,57 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise delivery_channel_unspecified_error()
 
             raise error
+
+    async def _find_account_by_email(self, user_ref: str) -> Optional[dict]:
+        """Resolve an OTP sign-in identifier that is no account id as the account's email (WT-2212).
+
+        An id match always wins, so this runs only after that lookup found nothing: in
+        PortaBilling an account id can itself be an address. Exactly one open account
+        must carry the email. With none the caller answers 404; with several no account
+        is picked and the sign-in is refused, so no code is sent to anyone.
+
+        The email filter is a LIKE pattern, so its rows are candidates only, and a common
+        address can have more of them than one page holds. The pages are read until they
+        run out, stopping at a second exact match; past EMAIL_LOOKUP_MAX_ROWS the
+        sign-in is refused instead of picking an account from a partial list.
+
+        get_account_list leaves out assigned_addons, so the match is read again with
+        get_account_info: the alias resolution and the add-on gate need the full row.
+
+        Returns:
+            Optional[dict]: The matching account_info, or None when nothing matches or
+                the identifier is no address.
+
+        Raises:
+            WebTritErrorException: 422 ambiguous_user_ref when several accounts match,
+                or when there are too many candidates to tell.
+        """
+        email = user_ref.strip()
+        if not _EMAIL_RE.match(email):
+            return None
+
+        matches = set()
+        offset = 0
+        while True:
+            resp = await self._admin_api.find_accounts_by_email(email, limit=EMAIL_LOOKUP_PAGE, offset=offset)
+            rows = resp.get("account_list") or []
+            matches.update(row["i_account"] for row in rows if _has_email(row, email))
+            if len(matches) > 1:
+                logging.info(f"OTP sign-in by email refused: {len(matches)} accounts share the address")
+                raise ambiguous_user_error()
+
+            offset += len(rows)
+            total = resp.get("total")
+            if len(rows) < EMAIL_LOOKUP_PAGE or (total is not None and offset >= int(total)):
+                break
+            if offset >= EMAIL_LOOKUP_MAX_ROWS:
+                logging.warning(f"OTP sign-in by email refused: more than {offset} candidate accounts")
+                raise ambiguous_user_error()
+
+        if not matches:
+            return None
+
+        return (await self._admin_api.get_account_info(i_account=matches.pop())).get("account_info")
 
     async def validate_otp(self, otp: OTPVerifyRequest) -> SessionInfo:
         """Validates the OTP code provided by the user and creates a session.
@@ -1792,15 +1937,19 @@ class PortaSwitchAdapter(BSSAdapter):
         try:
             time_from, time_to = self._call_history_range(time_from, time_to)
 
+            by_cr_download_ids = await self._recordings_by_cr_download_ids()
             result: dict = await self._account_api.get_xdr_list(
                 access_token=safely_extract_scalar_value(session.access_token),
                 page=page,
                 items_per_page=items_per_page,
                 time_from=time_from,
                 time_to=time_to,
+                with_cr_download_ids=by_cr_download_ids,
             )
 
-            return [Serializer.get_cdr_info(cdr) for cdr in result["xdr_list"]], result["total"]
+            return [
+                Serializer.get_cdr_info(cdr, by_cr_download_ids=by_cr_download_ids) for cdr in result["xdr_list"]
+            ], result["total"]
 
         except WebTritErrorException as error:
             fault_code = extract_fault_code(error)

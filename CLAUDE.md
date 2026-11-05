@@ -168,6 +168,19 @@ means the documented template to copy does not honour either mechanism.
   the beneficiary's own custom fields (they are per account, not inherited), and the
   contact lookup by number (`_resolve_master`) shows the beneficiary, not its sponsor.
   Every such site goes through `_is_beneficiary`.
+- **OTP sign-in by email (WT-2212)** is a fallback, never a replacement: `generate_otp`
+  looks the identifier up as an account id first, because in PortaBilling an id can
+  itself be an address, and only on a miss, for an identifier shaped like one, searches
+  the email field. There is no switch: an address used to answer 404 on every tenant.
+  `Account/get_account_list`'s `email` filter is a LIKE pattern, so its rows are
+  candidates: `_find_account_by_email` keeps the one whose field holds the address — by
+  PortaBilling's own password-reset rule, comma-separated entries and the
+  `Name <address>` form — and refuses (`422 ambiguous_user_ref`) when several do,
+  sending no code. A common address can have more candidates than a page, so it pages
+  through them all, and refuses past `EMAIL_LOOKUP_MAX_ROWS` rather than decide on a
+  partial list: a second match outside the window would otherwise get a code sent. It
+  then re-reads the match with `get_account_info`, because the list rows carry no
+  `assigned_addons` and the add-on gate would refuse every account.
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 
@@ -189,6 +202,19 @@ params unescaped. `parse_recording_id` splits it back. A bare numeric id is one 
 before WT-1963: it still downloads, and the transcript answers 404 rather than
 guessing. Do not "simplify" this back to `str(i_xdr)` — that silently removes the only
 path to a transcript.
+
+### Whether a call has a recording depends on the release
+
+From MR129 on, `get_xdr_list` no longer sets `bit_flags` bit 64 for a recorded call
+(IUN-1014), and the only signal is `cr_download_ids`, returned only for
+`with_cr_download_ids=1` (WT-1939). On earlier releases that flag is documented and
+works, but makes the request 50-300 times slower (MR120: 0.2 s → 20-60 s), which
+pushed history into the timeout and filled Core's pool to the adapter (WT-2241).
+So `retrieve_calls` reads `Generic/get_version` (cached an hour, a failure a minute)
+and sends the flag only from MR129 on; before it, it reads bit 64 as the adapter did
+before WT-1939. Do not send the flag unconditionally again, and do not read bit 64 on
+MR129+ — there it is stale. An unreadable version falls back to the flag: correct
+everywhere, slow only on old releases.
 
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 
