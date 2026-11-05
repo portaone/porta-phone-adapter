@@ -168,6 +168,19 @@ means the documented template to copy does not honour either mechanism.
   the beneficiary's own custom fields (they are per account, not inherited), and the
   contact lookup by number (`_resolve_master`) shows the beneficiary, not its sponsor.
   Every such site goes through `_is_beneficiary`.
+- **OTP sign-in by email (WT-2212)** is a fallback, never a replacement: `generate_otp`
+  looks the identifier up as an account id first, because in PortaBilling an id can
+  itself be an address, and only on a miss, for an identifier shaped like one, searches
+  the email field. There is no switch: an address used to answer 404 on every tenant.
+  `Account/get_account_list`'s `email` filter is a LIKE pattern, so its rows are
+  candidates: `_find_account_by_email` keeps the one whose field holds the address — by
+  PortaBilling's own password-reset rule, comma-separated entries and the
+  `Name <address>` form — and refuses (`422 ambiguous_user_ref`) when several do,
+  sending no code. A common address can have more candidates than a page, so it pages
+  through them all, and refuses past `EMAIL_LOOKUP_MAX_ROWS` rather than decide on a
+  partial list: a second match outside the window would otherwise get a code sent. It
+  then re-reads the match with `get_account_info`, because the list rows carry no
+  `assigned_addons` and the add-on gate would refuse every account.
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 

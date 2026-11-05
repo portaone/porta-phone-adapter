@@ -387,6 +387,28 @@ be (WT-1926).
 The gate is a sign-in check only — an established session outlives the removal of the
 add-on until its token expires.
 
+## OTP sign-in by email (PortaSwitch)
+
+`POST /session/otp-create` takes the account's email as well as its id (WT-2212), and
+`GET /system-info` advertises both as `otp_login_identifiers`, so the apps ask for a phone
+number or an email. The identifier is looked up as an account id first, as before, so an
+account whose id is itself an address still signs in by id. Only when no account has that
+id, and the identifier looks like an address (one `@`, a dot in the domain, no `%`), are
+the open accounts searched by their email field — across every customer the admin user
+can see.
+
+Exactly one account must hold the address, compared without case against each entry of
+the field, a `Name <address>` entry included — the rule PortaBilling itself uses for
+password reset. With none the answer is `404`, with several `422 ambiguous_user_ref`,
+and no code is sent either way. The search is a substring match, so every page of
+candidates is checked; above 10 000 candidates the sign-in is refused with the same
+`422` rather than decided on part of the list. No account is ever created.
+
+Review accounts listed in `OTP_IGNORE_ACCOUNTS` should keep signing in by id. That list
+is compared with what the user typed, and an email is not unique in PortaBilling: once
+the review account is closed, an email entry would let any other account holding that
+address in without a valid code.
+
 ## Device and session limits (PortaSwitch)
 
 | Variable | Default | Purpose |
