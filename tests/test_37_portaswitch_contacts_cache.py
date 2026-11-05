@@ -58,6 +58,7 @@ def full_account(i_account=6001):
         "dual_version_system": None,
         "did_number": "12065550101",
         "i_master_account": None,
+        "billing_model": 1,
         "alias_list": [{"id": "12065550102", "i_account": 7, "extra": "x"}],
         "alias_did_number_list": [{"did_number": "12065550103", "junk": 1}],
         # ballast
