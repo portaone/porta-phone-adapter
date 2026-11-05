@@ -210,7 +210,8 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
         return await self.__send_request(module="Account", method="get_alias_list", params={}, access_token=access_token)
 
     async def get_xdr_list(
-            self, access_token: str, page: int, items_per_page: int, time_from: datetime, time_to: datetime
+            self, access_token: str, page: int, items_per_page: int, time_from: datetime, time_to: datetime,
+            with_cr_download_ids: bool = True,
     ) -> dict:
         """Returns the account_info of the account, which created a session related to
         the access_token.
@@ -222,24 +223,29 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
             :items_per_page (int): Shows the number of items to return.
             :time_from (datetime): Filters the time frame of the CDR history.
             :time_to (datetime): Filters the time frame of the CDR history.
+            :with_cr_download_ids (bool): Ask for the cr_download_ids of recorded calls.
+                Needed from MR129 on, very slow before it (WT-2241).
 
         Returns:
             :(dict): The API method execution result that contains an account info.
 
         """
+        params = {
+            "i_service_type": 3,
+            "get_total": 1,
+            "show_unsuccessful": 1,
+            "limit": items_per_page,
+            "offset": items_per_page * (page - 1),
+            "from_date": time_from.strftime("%Y-%m-%d %H:%M:%S"),
+            "to_date": time_to.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if with_cr_download_ids:
+            params["with_cr_download_ids"] = 1
+
         return await self.__send_request(
             module="Account",
             method="get_xdr_list",
-            params={
-                "i_service_type": 3,
-                "get_total": 1,
-                "show_unsuccessful": 1,
-                "with_cr_download_ids": 1,
-                "limit": items_per_page,
-                "offset": items_per_page * (page - 1),
-                "from_date": time_from.strftime("%Y-%m-%d %H:%M:%S"),
-                "to_date": time_to.strftime("%Y-%m-%d %H:%M:%S"),
-            },
+            params=params,
             access_token=access_token,
         )
 
