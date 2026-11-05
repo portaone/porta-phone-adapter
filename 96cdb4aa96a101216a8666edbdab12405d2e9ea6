@@ -1,0 +1,106 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "d394198a_6d18d14c",
+        "filename": "README.md",
+        "patchSetId": 1
+      },
+      "lineNbr": 402,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T09:33:46Z",
+      "side": 1,
+      "message": "Advising operators to put a review account\u0027s *email* into `OTP_IGNORE_ACCOUNTS` ties an OTP bypass to a value that PortaBilling doesn\u0027t keep unique. If the review account is later closed and another account gets the same email, the bypass silently moves to that account. I\u0027d recommend that review accounts keep signing in by id, or explain here why the email form is safe.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "2004b89e_b6222ba5",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 211,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T09:33:46Z",
+      "side": 1,
+      "message": "The email field is split only on commas, so `John Doe \u003cjohn@ifonica.example\u003e` never matches and that subscriber gets a 404. PortaBilling\u0027s own email lookup for password reset accepts both forms: `(^|,)\\s*ADDR\\s*(,|$)` or `\u003c\\s*ADDR\\s*\u003e` (`Porta/PasswordsRole.pm`, `$_EMAIL_REGEXP_FMT`). Please use the same rule here: take the address from inside `\u003c…\u003e` when it is there, then compare it without case. Please also add a test for that form.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "3f1efb2e_788eada7",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 213,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T09:33:46Z",
+      "side": 1,
+      "message": "`casefold()` assumes the database compares `Accounts.email` without case too. With a case-sensitive comparison, `John_Doe@…` never reaches the post-filter and the user gets a 404, even though `test_the_address_is_compared_without_case` says otherwise. Please confirm on a live switch, ideally Ifonica\u0027s, by requesting a code with an upper-case version of an existing address.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "bcdbd42f_e85de8be",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 290,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T09:33:46Z",
+      "side": 1,
+      "message": "`OTP_LOGIN_IDENTIFIERS` still advertises only `(\u0027phone_number\u0027,)`, and `/system-info` hands this to the clients (`main.py:490`). The mobile app picks its sign-in UI from it (`otp_signin_identifier.dart`): with phone only it shows \"Enter your phone number\", a text keyboard, phone autofill and the phone wording for `delivery_channel_unspecified`. The adapter now accepts an email, but Ifonica users will be told to type a phone number, so requirement 1 of WT-2212 is not met end to end.\n\nPlease advertise `(\u0027phone_number\u0027, \u0027email\u0027)`. If showing \"phone or email\" on every PortaSwitch tenant is not wanted, make it a setting. In that case the \"no switch\" note in CLAUDE.md/README needs updating.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "0f1189c8_18bb7771",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 649,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T09:33:46Z",
+      "side": 1,
+      "message": "A single `get_account_list` call with `limit\u003d1000` can miss matches. `%john@gmail.com%` also matches `ajohn@gmail.com`, `xjohn@gmail.com.ua`, and so on, so on a large tenant there can be more than 1000 candidates. When the exact matches are past row 1000, the result is either a false 404, or only one match is seen while a second account outside the window has the same address. In the second case a code is sent, which breaks requirement 4 (\"several accounts, no OTP\").\n\n`LIKE \u0027%addr%\u0027` plus the exact post-filter is the right approach. It is how PortaBilling\u0027s own account search behaves (`Porta/Account.pm:10536`), and the field can hold several addresses, so please keep it. Just page through the candidates: pass `get_total: 1` plus `offset` in `find_accounts_by_email`, loop until the rows run out, stop early as soon as a second exact match is found (raise `ambiguous_user_ref`), and refuse above a hard cap (for example 10 000 rows) rather than pick an account from a partial list.\n\nPlease add a test where the candidates span more than one page.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "2775b3f9_d3a2e4b0",
+        "filename": "app/bss/adapters/portaswitch/exceptions.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 28,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T09:33:46Z",
+      "side": 1,
+      "message": "`ambiguous_user_ref` is new and no client handles it yet. It is missing from the mobile app\u0027s `login_error_notification.dart` map and from the web-app i18n, so users will see a generic error. Please open follow-up tickets for mobile-app and web-app and link them to WT-2212.\n\nAlso note that 404, 422 and 200 now tell an unauthenticated caller whether an email is registered and whether it is shared. The id flow already does this for ids, so this is not a blocker, but it\u0027s worth a line in the ticket, since emails are more sensitive than phone numbers.\n\n**Co-Reviewed By: deep-code-reviewer**",
+      "revId": "96cdb4aa96a101216a8666edbdab12405d2e9ea6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
