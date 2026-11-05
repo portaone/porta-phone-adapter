@@ -1,0 +1,38 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "cf66e0d3_dfee6292",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 178,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T10:03:04Z",
+      "side": 1,
+      "message": "`billing_model` is not in this projection. That\u0027s not a bug today: every `_resolve_master` caller gets a row straight from `get_account_list` / `get_account_info`, never a cached one. But the comment above says the projection serves \"the alias/master lookups\", and `i_master_account` is kept here for that reason. If one of those lookups ever moves onto the cache, `_is_beneficiary` will silently return False for the projected row, and a beneficiary will be replaced by its sponsor again (WT-2209). Please add `billing_model` here. It\u0027s a single int.",
+      "revId": "0cc5166447cc50a20f2ca9f2d08d196b596afa87",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4688d787_c8334ac1",
+        "filename": "tests/test_56_portaswitch_beneficiary.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 213,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-05T10:03:04Z",
+      "side": 1,
+      "message": "Missing case: an alias whose master is a beneficiary. The code already handles it correctly: one hop lands on the beneficiary, which then keeps its own limits and contact. But no test covers it. Please add one: signing in by the alias should give the beneficiary\u0027s own `account_max_devices` without ever looking up the sponsor, and `phone_numbers\u003d\u003calias\u003e` should return the beneficiary.",
+      "revId": "0cc5166447cc50a20f2ca9f2d08d196b596afa87",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
