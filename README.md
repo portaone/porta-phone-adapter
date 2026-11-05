@@ -387,6 +387,21 @@ be (WT-1926).
 The gate is a sign-in check only — an established session outlives the removal of the
 add-on until its token expires.
 
+## OTP sign-in by email (PortaSwitch)
+
+`POST /session/otp-create` takes the account's email as well as its id (WT-2212). The
+identifier is looked up as an account id first, as before, so an account whose id is
+itself an address still signs in by id. Only when no account has that id, and the
+identifier looks like an address (one `@`, a dot in the domain, no `%`), are the open
+accounts searched by their email field — across every customer the admin user can see.
+
+Exactly one account must hold the address, compared without case against each entry of
+the field. With none the answer is `404`, with several `422 ambiguous_user_ref`, and no
+code is sent either way. No account is ever created.
+
+`OTP_IGNORE_ACCOUNTS` compares what the user typed, so a review account signed in by
+email needs its email in that list.
+
 ## Device and session limits (PortaSwitch)
 
 | Variable | Default | Purpose |

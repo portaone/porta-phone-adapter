@@ -113,6 +113,33 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
             params=params,
         )
 
+    async def find_accounts_by_email(self, email: str, limit: int = 1000) -> dict:
+        """Returns the open accounts, of any customer, whose email field contains `email`.
+
+        PortaBilling treats the filter as a LIKE pattern, so the rows are candidates
+        only: `_` and `%` in the address, a longer address and the other entries of a
+        comma-separated email field all match too. The caller compares exactly.
+
+        Parameters:
+            :email (str): The address to look for.
+            :limit (int): Maximum number of accounts to return.
+
+        Returns:
+            :(dict): The API method execution result that contains info about accounts.
+
+        """
+        return await self._send_request(
+            module="Account",
+            method="get_account_list",
+            params={
+                "email": f"%{email}%",
+                "get_not_closed_accounts": 1,
+                "get_only_real_accounts": 1,
+                "limit": limit,
+                "offset": 0,
+            },
+        )
+
     async def get_customer_info(self, i_customer: int) -> dict:
         """Returns information about the customer, including office type and hierarchy.
 

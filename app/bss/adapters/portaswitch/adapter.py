@@ -78,6 +78,7 @@ from .exceptions import (
     not_found_recording_link_error,
     expired_recording_link_error,
     not_found_linked_transcription_error,
+    ambiguous_user_error,
 )
 from .recording_link import RecordingLinkExpired, RecordingLinkInvalid, RecordingLinkSigner
 from .serializer import Serializer
@@ -199,6 +200,18 @@ ACCOUNTS_CACHE_MAX_ROWS: Final[int] = 100_000
 #: PortaBilling fills i_master_account for it too - with the sponsor, not a master
 #: as for an alias (billing_model 2) - so the two must not be confused (WT-2209).
 BILLING_MODEL_BENEFICIARY: Final[int] = 4
+
+
+#: A sign-in identifier that may be an email; anything else is never looked up by email.
+#: `%` is refused: the lookup is an unauthenticated LIKE search across every customer,
+#: and `%@%` would list them all. `_` stays, real addresses carry it.
+_EMAIL_RE: Final = re.compile(r"^[^@\s,%]+@[^@\s,%]+\.[^@\s,%]+$")
+
+
+def _has_email(account_row: dict, email: str) -> bool:
+    """Tell whether `email` is one of the addresses in the row's comma-separated email field."""
+    wanted = email.casefold()
+    return any(part.strip().casefold() == wanted for part in (account_row.get("email") or "").split(","))
 
 
 def _is_beneficiary(account_info: dict) -> bool:
@@ -569,6 +582,8 @@ class PortaSwitchAdapter(BSSAdapter):
             )
             account_info = account_resp.get("account_info")
             if not account_info:
+                account_info = await self._find_account_by_email(user.user_id)
+            if not account_info:
                 raise not_found_user_error(user.user_id)
 
             # If the provided identifier refers to an alias, resolve to the master account,
@@ -608,6 +623,38 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise delivery_channel_unspecified_error()
 
             raise error
+
+    async def _find_account_by_email(self, user_ref: str) -> Optional[dict]:
+        """Resolve an OTP sign-in identifier that is no account id as the account's email (WT-2212).
+
+        An id match always wins, so this runs only after that lookup found nothing: in
+        PortaBilling an account id can itself be an address. Exactly one open account
+        must carry the email. With none the caller answers 404; with several no account
+        is picked and the sign-in is refused, so no code is sent to anyone.
+
+        get_account_list leaves out assigned_addons, so the match is read again with
+        get_account_info: the alias resolution and the add-on gate need the full row.
+
+        Returns:
+            Optional[dict]: The matching account_info, or None when nothing matches or
+                the identifier is no address.
+
+        Raises:
+            WebTritErrorException: 422 ambiguous_user_ref when several accounts match.
+        """
+        email = user_ref.strip()
+        if not _EMAIL_RE.match(email):
+            return None
+
+        rows = (await self._admin_api.find_accounts_by_email(email)).get("account_list") or []
+        matches = {row["i_account"] for row in rows if _has_email(row, email)}
+        if len(matches) > 1:
+            logging.info(f"OTP sign-in by email refused: {len(matches)} accounts share the address")
+            raise ambiguous_user_error()
+        if not matches:
+            return None
+
+        return (await self._admin_api.get_account_info(i_account=matches.pop())).get("account_info")
 
     async def validate_otp(self, otp: OTPVerifyRequest) -> SessionInfo:
         """Validates the OTP code provided by the user and creates a session.
