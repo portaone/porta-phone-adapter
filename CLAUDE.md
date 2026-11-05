@@ -164,6 +164,10 @@ means the documented template to copy does not honour either mechanism.
   resolve it. Its own row already lists the add-ons it inherits from the sponsor (seen
   on a live switch), so the add-on gate reads that row too. Resolving it like an alias
   checked the sponsor's password, which has none - `KeyError` and a 500 (WT-2209).
+  The same holds wherever `i_master_account` is followed: `_read_device_limits` reads
+  the beneficiary's own custom fields (they are per account, not inherited), and the
+  contact lookup by number (`_resolve_master`) shows the beneficiary, not its sponsor.
+  Every such site goes through `_is_beneficiary`.
 - **`serializer.py`** — every PortaBilling payload → wire model conversion. Field names
   and date formats live here, not in `adapter.py`.
 
