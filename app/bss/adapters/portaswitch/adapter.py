@@ -154,11 +154,13 @@ CALL_HISTORY_MAX_DATE: Final[datetime] = datetime(9000, 1, 1)
 #: has 57 fields and costs ~2.9 KB per account as Python objects against ~0.5 KB
 #: for this projection, and the lists being cached run to thousands of rows
 #: (WT-1922). Anything added to Serializer.get_contact_info_by_account has to be
-#: added here too; test_37 fails if the two drift apart.
+#: added here too; test_37 fails if the two drift apart. `billing_model` travels
+#: with `i_master_account`: without it `_is_beneficiary` is False for every cached
+#: row, and a beneficiary would be resolved to its sponsor like an alias (WT-2209).
 ACCOUNT_CACHE_FIELDS: Final[tuple] = (
     "i_account", "i_customer", "id", "firstname", "lastname", "companyname",
     "email", "extension_id", "extension_name", "sip_status", "status",
-    "dual_version_system", "did_number", "i_master_account",
+    "dual_version_system", "did_number", "i_master_account", "billing_model",
 )
 
 #: Nested lists worth keeping, trimmed to the single key each consumer reads.
@@ -1027,8 +1029,10 @@ class PortaSwitchAdapter(BSSAdapter):
                 return account
 
             async def _resolve_master(account: dict) -> dict:
-                """Follow i_master_account to the real owner account, enriched with alias_list."""
-                if master_id := account.get("i_master_account"):
+                """Follow an alias's i_master_account to the real owner account, enriched with
+                alias_list. A beneficiary is a contact of its own: its i_master_account is its
+                sponsor (WT-2209)."""
+                if not _is_beneficiary(account) and (master_id := account.get("i_master_account")):
                     try:
                         master = (await self._admin_api.get_account_info(i_account=master_id)).get("account_info")
                         if master:
@@ -2698,8 +2702,8 @@ class PortaSwitchAdapter(BSSAdapter):
     async def _read_device_limits(self, account_info: dict) -> dict:
         """Read the device and session limits Core enforces for this account (WT-2005).
 
-        The limits are PortaBilling custom fields of the master account and of its
-        customer. An account field missing or blank falls back to the configured default;
+        The limits are PortaBilling custom fields of the account (an alias's master) and
+        of its customer. An account field missing or blank falls back to the configured default;
         a customer field has no default and stays None. None means "no limit", and so does
         0, whether it comes from a field or from a default.
 
@@ -2708,7 +2712,8 @@ class PortaSwitchAdapter(BSSAdapter):
 
         Parameters:
             account_info (dict): The account record the user signs in with. An alias row
-                carries no custom fields of its own, so it is resolved to its master first.
+                carries no custom fields of its own, so it is resolved to its master first;
+                a beneficiary has its own and is read as is (WT-2209).
 
         Returns:
             dict: customer_id and the four limit fields, ready to spread into SessionInfo.
@@ -2718,7 +2723,9 @@ class PortaSwitchAdapter(BSSAdapter):
         account_limits, customer_limits = (None, None), (None, None)
 
         try:
-            if master_id := account_info.get("i_master_account"):
+            # A beneficiary keeps custom fields of its own; its i_master_account is its
+            # sponsor, whose limits are not inherited (WT-2209).
+            if not _is_beneficiary(account_info) and (master_id := account_info.get("i_master_account")):
                 master_info = (await self._admin_api.get_account_info(i_account=master_id))["account_info"]
                 i_customer = master_info["i_customer"]
                 account_info = master_info
