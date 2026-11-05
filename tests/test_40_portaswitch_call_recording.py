@@ -60,6 +60,35 @@ class TestCallRecordingExist:
         assert Serializer._call_recording_exist(cdr) is False
 
 
+class TestCallRecordingExistBeforeMR129:
+    """Before MR129 the bit is what carries a recording, and get_xdr_list is asked
+    without with_cr_download_ids, so cr_download_ids is never there (WT-2241)."""
+
+    def test_bit_flags_64_means_recording_exists(self):
+        cdr = _make_cdr(bit_flags=4 | 64)
+        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is True
+
+    def test_no_bit_64_means_no_recording(self):
+        cdr = _make_cdr(bit_flags=4)
+        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is False
+
+    def test_absent_bit_flags_means_no_recording(self):
+        cdr = _make_cdr()
+        del cdr["bit_flags"]
+        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is False
+
+    def test_cr_download_ids_is_not_consulted(self):
+        cdr = _make_cdr(bit_flags=4, cr_download_ids=["E0C5281F_E5B8480E_1D3207FE_019AFB34"])
+        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is False
+
+    def test_recording_id_carries_both_billing_keys(self):
+        cdr = _make_cdr(bit_flags=4 | 64)
+        recording_id = Serializer.get_cdr_info(cdr, by_cr_download_ids=False).recording_id.root
+        assert Serializer.parse_recording_id(recording_id) == (
+            "129580143", "062BDBD0 7366C3AD 6ED2EA7A 66D2F473"
+        )
+
+
 class TestGetCdrInfoRecordingId:
     def test_recording_id_carries_both_billing_keys(self):
         cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])

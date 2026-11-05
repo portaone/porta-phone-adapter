@@ -40,11 +40,20 @@ from bss.types import SessionInfo, UserInfo  # noqa: E402
 WINDOW_DEFAULT = 24
 
 
+class VersionAdminAPI:
+    """Answers Generic/get_version; the release only picks how recordings are detected."""
+
+    async def get_version(self):
+        return "MR131-0"
+
+
 def make_adapter(window_hours=WINDOW_DEFAULT):
     adapter = object.__new__(PortaSwitchAdapter)
     adapter._portaswitch_settings = PortaSwitchSettings(
         CALL_HISTORY_DEFAULT_WINDOW_HOURS=window_hours
     )
+    adapter._admin_api = VersionAdminAPI()
+    adapter._init_portaswitch_version_cache_state()
     return adapter
 
 
@@ -315,6 +324,30 @@ async def test_get_xdr_list_pins_the_payload_sent_to_the_switch():
         "from_date": "2026-09-05 06:08:39",
         "to_date": "2026-09-06 06:08:39",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_xdr_list_leaves_out_with_cr_download_ids_when_told_to():
+    """Before MR129 the flag makes the request 50-300 times slower (WT-2241)."""
+    api = object.__new__(AccountAPI)
+    sent = {}
+
+    async def fake_send_request(**kwargs):
+        sent.update(kwargs)
+        return {"xdr_list": [], "total": 0}
+
+    api._AccountAPI__send_request = fake_send_request
+
+    await api.get_xdr_list(
+        access_token="token",
+        page=1,
+        items_per_page=40,
+        time_from=datetime(2026, 9, 5, 6, 8, 39),
+        time_to=datetime(2026, 9, 6, 6, 8, 39),
+        with_cr_download_ids=False,
+    )
+
+    assert "with_cr_download_ids" not in sent["params"]
 
 
 @pytest.mark.asyncio

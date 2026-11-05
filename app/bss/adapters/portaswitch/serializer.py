@@ -425,11 +425,12 @@ class Serializer:
         )
 
     @staticmethod
-    def get_cdr_info(cdr_info: dict) -> CDRInfo:
+    def get_cdr_info(cdr_info: dict, by_cr_download_ids: bool = True) -> CDRInfo:
         """Forms CDRInfo based on the input cdr_info.
 
         Parameters:
             :cdr_info (dict): The information about the CDR to be added to CDRInfo.
+            :by_cr_download_ids (bool): How a recording is detected, see _call_recording_exist.
 
         Returns:
             :(CDRInfo): The filled structure of CDRInfo.
@@ -447,7 +448,9 @@ class Serializer:
             ),
             duration=cdr_info["charged_quantity"],
             recording_id=(
-                Serializer.compose_recording_id(cdr_info) if Serializer._call_recording_exist(cdr_info) else None
+                Serializer.compose_recording_id(cdr_info)
+                if Serializer._call_recording_exist(cdr_info, by_cr_download_ids)
+                else None
             ),
             status=Serializer.parse_call_status(cdr_info)
         )
@@ -564,12 +567,17 @@ class Serializer:
             return ConnectStatus.error
 
     @staticmethod
-    def _call_recording_exist(cdr) -> bool:
-        """Tells whether a call recording exists, by the cr_download_ids the billing
-        returns only for get_xdr_list(with_cr_download_ids=1). The bit_flags bit 64 that
-        used to carry this is not set anymore since MR129 (IUN-1014, WT-1939).
+    def _call_recording_exist(cdr, by_cr_download_ids: bool = True) -> bool:
+        """Tells whether a call recording exists.
+
+        From MR129 on, by the cr_download_ids the billing returns only for
+        get_xdr_list(with_cr_download_ids=1): the bit_flags bit 64 that used to carry
+        this is not set anymore there (IUN-1014, WT-1939). Before MR129, by that bit,
+        because the flag makes get_xdr_list 50-300 times slower there (WT-2241).
         """
-        return bool(cdr.get("cr_download_ids"))
+        if by_cr_download_ids:
+            return bool(cdr.get("cr_download_ids"))
+        return (int(cdr.get("bit_flags") or 0) & 64) != 0
 
     @staticmethod
     def compose_recording_id(cdr_info: dict) -> str:
