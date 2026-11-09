@@ -151,6 +151,7 @@ class BSSAdapter(SessionManagement, OTPHandler,
         DIRECT_PRESENCE=dict(default=True, option=Capabilities.direct_presence),
         SIP_PRESENCE=dict(default=True, option=Capabilities.sip_presence),
         SIP_DIALOGS=dict(default=True, option=Capabilities.sip_dialogs),
+        SIP_MWI=dict(default=True, option=Capabilities.sip_mwi),
         CONFERENCE=dict(default=False, option=Capabilities.conference),
         CONVERSATION_MUTE=dict(default=True, option=Capabilities.conversation_mute),
         CALL_CENTER=dict(default=False, option=Capabilities.call_center),
@@ -170,6 +171,9 @@ class BSSAdapter(SessionManagement, OTPHandler,
         # same call history row - with recordings off there is nothing to ask about
         # (WT-1963).
         Capabilities.transcription: Capabilities.recordings,
+        # The message waiting subscription only feeds the voicemail push and list
+        # refresh; without a voicemail screen there is no box to watch (WT-2224).
+        Capabilities.sip_mwi: Capabilities.voicemail,
     }
     # what our adapter can do in general (what is coded)
     # should be overridden in the sub-class
