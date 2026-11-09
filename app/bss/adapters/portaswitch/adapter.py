@@ -339,6 +339,11 @@ class PortaSwitchAdapter(BSSAdapter):
         Capabilities.direct_presence,
         Capabilities.sip_presence,
         Capabilities.sip_dialogs,
+        # Core subscribes to `message-summary` for the user's own number. PortaSwitch
+        # sends the message waiting indication only to subscribers unless
+        # MediaServer.mwi_backward_compatibility is on, which it is not by default
+        # since mr113 (WT-2224).
+        Capabilities.sip_mwi,
         # Merging calls into a conference happens entirely in Core and Janus -
         # nothing is signalled to PortaSwitch - so this only tells the client
         # whether the deployment offers it (WT-783).

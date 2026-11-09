@@ -650,6 +650,7 @@ class SupportedEnum(Enum):
     direct_presence = "directPresence"
     sip_presence = "sipPresence"
     sip_dialogs = "sipDialogs"
+    sip_mwi = "sipMwi"
     conference = "conference"
     conversation_mute = "conversationMute"
     call_center = "callCenter"

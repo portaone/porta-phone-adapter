@@ -64,8 +64,9 @@ Presence (WT-1834):
 | `CAPABILITIES_DIRECT_PRESENCE` | `true` | Presence exchanged between WebTrit apps over Core's own PubSub. Never touches SIP or PortaSwitch |
 | `CAPABILITIES_SIP_PRESENCE` | `true` | Presence over SIP PUBLISH/SUBSCRIBE, from the user's subscription book |
 | `CAPABILITIES_SIP_DIALOGS` | `true` | Dialog-info subscriptions: Call Pull and contact BLF |
+| `CAPABILITIES_SIP_MWI` | `true` | `message-summary` subscription to the user's own voicemail box, which the new voicemail push and list refresh run on. Needed when PortaSwitch's `MediaServer.mwi_backward_compatibility` is off (the default since mr113); dropped with `CAPABILITIES_VOICEMAIL` off |
 
-The three are independent transports. `directPresence` describes Core behaviour rather
+The four are independent. `directPresence` describes Core behaviour rather
 than PortaSwitch behaviour, but unlike `conference` it is not advertising: Core requires
 the entry, so switching it off stops a controller publishing its own status and reading
 anyone else's. Leave it on unless a deployment is large enough that app-to-app presence
