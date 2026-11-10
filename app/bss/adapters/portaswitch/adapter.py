@@ -45,6 +45,7 @@ from bss.types import (
 )
 from localization import get_translation_func
 from report_error import WebTritErrorException
+from request_trace import sanitize_data
 from .api import AccountAPI, AdminAPI
 from .config import Settings
 from .failover import SiteState
@@ -2848,7 +2849,7 @@ class PortaSwitchAdapter(BSSAdapter):
     ) -> CustomResponse:
         attr_name = method_name.replace("-", "_")
         if method := getattr(self, attr_name, None):
-            logging.debug(f"Processing custom public method {method_name} with {data} request")
+            logging.debug(f"Processing custom public method {method_name} with {sanitize_data(data)} request")
 
             result = method(data=data, lang=lang)
             # Handlers are dispatched dynamically and may be sync or async.
@@ -2868,7 +2869,7 @@ class PortaSwitchAdapter(BSSAdapter):
     ) -> CustomResponse:
         attr_name = f"_{method_name.replace('-', '_')}"
         if method := getattr(self, attr_name, None):
-            logging.debug(f"Processing custom private method {method_name} from user {user_id} with {data} request")
+            logging.debug(f"Processing custom private method {method_name} from user {user_id} with {sanitize_data(data)} request")
 
             result = method(user_id=user_id, data=data, lang=lang)
             # Handlers are dispatched dynamically and may be sync or async.

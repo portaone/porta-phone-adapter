@@ -9,7 +9,7 @@ from bss.sessions import configure_session_storage
 from report_error import raise_webtrit_error
 from app_config import AppConfig
 from bss.http_api import HTTPAPIConnectorWithLogin, OAuthSessionData, APIUser
-from request_trace import sanitize_data
+from request_trace import mask_email, sanitize_data
 from typing import Union, List, Dict, Optional
 import hmac
 import logging
@@ -373,7 +373,7 @@ class FreePBXAdapter(BSSAdapter):
         try:
             return TypeAdapter(EmailStr).validate_python(email) if email else None
         except ValidationError:
-            logging.debug(f"Ignoring voicemail e-mail that is not a valid address: {email!r}")
+            logging.debug(f"Ignoring voicemail e-mail that is not a valid address: {mask_email(email)!r}")
             return None
 
     def signup(self, user_data, tenant_id: str = None):
