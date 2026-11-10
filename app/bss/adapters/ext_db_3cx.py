@@ -23,6 +23,7 @@ import re
 from datetime import datetime
 from typing import List
 import logging
+from request_trace import sanitize_data
 
 VERSION = "0.0.1"
 
@@ -241,8 +242,9 @@ class BSS3CXAdapter(BSSAdapterExternalDB):
         # other numbers that the user owns
         number_data = self.remap_dict(BSS3CXAdapter.NUMBERS_ATTR_MAP, db_data)
         user_data["numbers"] = Numbers(**number_data)
-        logging.debug(f"Re-mapped {db_data} to {user_data}")
-        return EndUser(**user_data)
+        user = EndUser(**user_data)
+        logging.debug(f"Re-mapped {sanitize_data(db_data)} to {sanitize_data(user)}")
+        return user
 
     def produce_contact_object(self, db_data) -> ContactInfo:
         """Create an EndUser object (as defined by WebTrit) from the
@@ -261,8 +263,9 @@ class BSS3CXAdapter(BSSAdapterExternalDB):
         # numbers that the user owns
         number_data = self.remap_dict(BSS3CXAdapter.NUMBERS_ATTR_MAP, db_data)
         user_data["numbers"] = Numbers(**number_data)
-        logging.debug(f"Re-mapped {db_data} to {user_data}")
-        return ContactInfo(**user_data)
+        contact = ContactInfo(**user_data)
+        logging.debug(f"Re-mapped {sanitize_data(db_data)} to {sanitize_data(contact)}")
+        return contact
 
     # retrieve_user is provided by the superclass
 

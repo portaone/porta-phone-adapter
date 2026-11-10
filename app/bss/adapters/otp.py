@@ -8,6 +8,7 @@ from bss.types import (UserInfo, OTP,
 from bss.sessions import SessionInfo
 from report_error import raise_webtrit_error
 import logging
+from request_trace import mask_email
 
 class OTPHandler(ABC):
     OTP_LOGIN_IDENTIFIERS = ('email', 'phone_number')
@@ -48,8 +49,8 @@ class SampleOTPHandler(OTPHandler):
         Returns: True if the message was sent successfully, False otherwise.
         
         Please override it in your sub-class"""
-        logging.error(f"Was supposed to send to {email_address} a message " +
-                      f"about OTP {otp.otp_expected_code} - but you have not " +
+        logging.error(f"Was supposed to send to {mask_email(email_address)} a message " +
+                      "about an OTP - but you have not " +
                       "implemented the actual method to do so in your sub-class. " +
                       "Let's assume you are just debugging your application now and " +
                       "consiser an email has been sent.")
@@ -88,9 +89,6 @@ class SampleOTPHandler(OTPHandler):
             # same OTP as configured in the test suite. make sure
             # this env var is NOT set in production!
             code = int(code_for_tests)
-        # so we can see it and use during debug (debug-only: must never leak the
-        # OTP at INFO in production) (WT-526)
-        logging.debug(f"OTP code {code}")
 
         otp_id = str(uuid.uuid1())
         otp_validity = int(self.config.get_conf_val("OTP", "Validity",
