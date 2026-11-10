@@ -85,6 +85,14 @@ def service_read_only_error():
     )
 
 
+def sip_credentials_missing_error():
+    return WebTritErrorException(403, "The account has no SIP password", "sip_credentials_missing")
+
+
+def self_care_login_missing_error():
+    return WebTritErrorException(422, "The account has no self-care login", "self_care_login_missing")
+
+
 def incorrect_credentials_error():
     return WebTritErrorException(401, "User authentication error", "incorrect_credentials")
 

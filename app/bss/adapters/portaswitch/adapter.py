@@ -79,6 +79,8 @@ from .exceptions import (
     expired_recording_link_error,
     not_found_linked_transcription_error,
     ambiguous_user_error,
+    sip_credentials_missing_error,
+    self_care_login_missing_error,
 )
 from .recording_link import RecordingLinkExpired, RecordingLinkInvalid, RecordingLinkSigner
 from .serializer import Serializer
@@ -615,7 +617,9 @@ class PortaSwitchAdapter(BSSAdapter):
             ):
                 account_info = (await self._admin_api.get_account_info(i_account=master_id)).get("account_info")
 
-            if not account_info or account_info[password_attr] != password:
+            # PortaBilling leaves an empty password out of the record (WT-2196).
+            stored_password = account_info.get(password_attr) if account_info else None
+            if not stored_password or stored_password != password:
                 raise incorrect_credentials_error()
 
             if self._portaswitch_settings.ALLOWED_ADDONS:
@@ -957,6 +961,10 @@ class PortaSwitchAdapter(BSSAdapter):
             )
             account_info: dict = account_info_resp["account_info"]
             aliases: list = alias_resp["alias_list"]
+
+            # PortaBilling leaves an empty SIP password out of the record (WT-2196).
+            if not account_info.get("h323_password"):
+                raise sip_credentials_missing_error()
 
             return Serializer.get_end_user(
                 account_info,
@@ -3461,14 +3469,21 @@ class PortaSwitchAdapter(BSSAdapter):
 
     async def _login_account(self, account_info: dict) -> dict:
         """Open an account realm session for an already read account record."""
+        # PortaBilling leaves an empty self-care login or password out of the record (WT-2196).
+        # Session/login cannot open a session without the login; a missing password is just
+        # not sent, and PortaBilling refuses the login with its own fault.
+        login = account_info.get("login")
+        if not login:
+            raise self_care_login_missing_error()
+        password = account_info.get("password")
         if await self._is_portaswitch_version_with_token():
             token = await self._get_or_create_api_token(account_info)
             if token:
-                return await self._account_api.login(account_info["login"], token=token)
+                return await self._account_api.login(login, token=token)
             else:
-                return await self._account_api.login(account_info["login"], account_info["password"])
+                return await self._account_api.login(login, password)
         else:
-            return await self._account_api.login(account_info["login"], account_info["password"], token=account_info["password"])
+            return await self._account_api.login(login, password, token=password)
 
     async def _is_portaswitch_version_with_token(self) -> bool:
         """Check if the actual version of PortaSwitch is a version with token support."""

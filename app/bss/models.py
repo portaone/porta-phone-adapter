@@ -46,6 +46,13 @@ class GetUserInfoUnprocessableEntityErrorResponse(ErrorResponse):
     )
 
 
+class GetUserInfoForbiddenErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `sip_credentials_missing`",
+    )
+
+
 class GetUserInfoNotFoundErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
@@ -63,7 +70,7 @@ class ProvisionSessionAutoUnauthorizedErrorResponse(ErrorResponse):
 class UpdateSessionUnprocessableEntityErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
-        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `refresh_token_invalid`\n- `refresh_token_expired`\n- `unknown`",
+        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `refresh_token_invalid`\n- `refresh_token_expired`\n- `self_care_login_missing`\n- `unknown`",
     )
 
 
@@ -435,7 +442,7 @@ class CustomNotFoundErrorResponse(ErrorResponse):
 class CustomUnprocessableEntityErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
-        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`",
+        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `self_care_login_missing`",
     )
 
 
@@ -502,7 +509,7 @@ class DeliveryChannel(Enum):
 class VerifySessionOtpUnprocessableEntityErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
-        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`",
+        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `self_care_login_missing`",
     )
 
 
@@ -604,7 +611,7 @@ class TranscriptionFormat(Enum):
 class CreateSessionUnprocessableEntityErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
-        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`",
+        description="`code` field values that are defined (but can be expanded) are:\n- `validation_error`\n- `self_care_login_missing`",
     )
 
 
