@@ -44,6 +44,7 @@ from bss.types import (
     GetUserHistoryListNotFoundErrorResponse,
     GetUserHistoryListUnauthorizedErrorResponse,
     GetUserHistoryListUnprocessableEntityErrorResponse,
+    GetUserInfoForbiddenErrorResponse,
     GetUserInfoInternalServerErrorErrorResponse,
     GetUserInfoNotFoundErrorResponse,
     GetUserInfoUnauthorizedErrorResponse,
@@ -496,6 +497,7 @@ async def get_system_info(
     response_model=EndUser,
     responses={
         '401': {'model': GetUserInfoUnauthorizedErrorResponse},
+        '403': {'model': GetUserInfoForbiddenErrorResponse},
         '404': {'model': GetUserInfoNotFoundErrorResponse},
         '422': {'model': GetUserInfoUnprocessableEntityErrorResponse},
         '500': {'model': GetUserInfoInternalServerErrorErrorResponse},
@@ -509,6 +511,7 @@ async def get_user_info(
         Union[
             EndUser,
             GetUserInfoUnauthorizedErrorResponse,
+            GetUserInfoForbiddenErrorResponse,
             GetUserInfoNotFoundErrorResponse,
             GetUserInfoUnprocessableEntityErrorResponse,
             GetUserInfoInternalServerErrorErrorResponse,

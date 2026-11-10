@@ -75,6 +75,7 @@ from bss.models import (
     GetUserHistoryListNotFoundErrorResponse as GetUserHistoryListNotFoundErrorResponse,
     GetUserHistoryListUnauthorizedErrorResponse as GetUserHistoryListUnauthorizedErrorResponse,
     GetUserHistoryListUnprocessableEntityErrorResponse as GetUserHistoryListUnprocessableEntityErrorResponse,
+    GetUserInfoForbiddenErrorResponse as GetUserInfoForbiddenErrorResponse,
     GetUserInfoInternalServerErrorErrorResponse as GetUserInfoInternalServerErrorErrorResponse,
     GetUserInfoNotFoundErrorResponse as GetUserInfoNotFoundErrorResponse,
     GetUserInfoUnauthorizedErrorResponse as GetUserInfoUnauthorizedErrorResponse,

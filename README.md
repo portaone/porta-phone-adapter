@@ -388,6 +388,14 @@ be (WT-1926).
 The gate is a sign-in check only — an established session outlives the removal of the
 add-on until its token expires.
 
+## Accounts without a SIP password (PortaSwitch)
+
+PortaBilling leaves an empty SIP password out of the account record. For such an account
+`GET /user` answers `403 sip_credentials_missing` instead of SIP credentials, and sign-in
+with `PORTASWITCH_SIGNIN_CREDENTIALS=sip` is refused with `401 incorrect_credentials`
+(WT-2196). An account with no self-care login cannot open an account session, so its
+sign-in (password or OTP) answers `422 self_care_login_missing`.
+
 ## OTP sign-in by email (PortaSwitch)
 
 `POST /session/otp-create` takes the account's email as well as its id (WT-2212), and
