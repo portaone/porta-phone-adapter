@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+from pydantic import EmailStr, TypeAdapter, ValidationError
+
 from bss.models import Crm, SIPTransport, UserId
 from bss.types import (
     Balance,
@@ -39,16 +41,29 @@ BILLING_MODEL_MAP: dict = {
 #: Not a character `h323_conf_id` (hex quads and spaces) or a number can contain.
 RECORDING_ID_SEPARATOR: str = "|"
 
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
+
 
 class Serializer:
     """Converts PortaSwitch API objects to WebTrit ones."""
 
     @staticmethod
     def _first_email(value: Optional[str]) -> Optional[str]:
-        """Return the first email from a potentially comma-separated string."""
+        """Return the first email from a potentially comma-separated string.
+
+        PortaBilling stores addresses email-validator rejects (`test@test`,
+        `user@host.local`, bare-IP domains); such an address is left out rather
+        than failing the whole user info or contact list (WT-2194)."""
         if not value:
             return None
-        return value.split(",")[0].strip() or None
+        email = value.split(",")[0].strip()
+        if not email:
+            return None
+        try:
+            return _EMAIL_ADAPTER.validate_python(email)
+        except ValidationError:
+            logging.debug(f"Ignoring account e-mail that is not a valid address: {email!r}")
+            return None
 
     @staticmethod
     def get_end_user(

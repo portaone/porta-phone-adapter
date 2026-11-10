@@ -41,6 +41,20 @@ class TestFirstEmail:
     def test_three_emails_returns_first(self):
         assert Serializer._first_email("a@x.com,b@x.com,c@x.com") == "a@x.com"
 
+    @pytest.mark.parametrize(
+        "value",
+        ["test@test", "user@host.local", "user@host.test", "user@188.40.90.59", "x@example.invalid", "no-at-sign"],
+    )
+    def test_address_the_validator_rejects_is_dropped(self, value):
+        """WT-2194: PortaBilling accepts these, the response model would not."""
+        assert Serializer._first_email(value) is None
+
+    def test_invalid_first_entry_is_dropped(self):
+        assert Serializer._first_email("test@test,user@example.com") is None
+
+    def test_name_addr_form_keeps_the_address(self):
+        assert Serializer._first_email("John Doe <john@example.com>") == "john@example.com"
+
 
 class TestGetEndUserEmail:
     """Verify get_end_user does not raise ValidationError with multiple emails."""
@@ -90,6 +104,13 @@ class TestGetEndUserEmail:
         user = Serializer.get_end_user(info, [], self._make_sip_server(), False, False)
         assert user.email is None
 
+    def test_invalid_email_is_dropped_not_500(self):
+        """WT-2194: an address email-validator rejects must not fail the user info."""
+        info = self._base_account_info("test@test")
+        user = Serializer.get_end_user(info, [], self._make_sip_server(), False, False)
+        assert user.email is None
+        assert user.numbers.main == "1000"
+
 
 class TestGetContactInfoEmail:
     """Verify get_contact_info_by_account does not raise ValidationError with multiple emails."""
@@ -123,3 +144,10 @@ class TestGetContactInfoEmail:
         info = self._base_account_info(None)
         contact = Serializer.get_contact_info_by_account(info, current_user=99)
         assert contact.email is None
+
+    def test_invalid_email_is_dropped_not_500(self):
+        """WT-2194: one account's unvalidatable address must not fail the contact list."""
+        info = self._base_account_info("wt2209-b2@example.invalid")
+        contact = Serializer.get_contact_info_by_account(info, current_user=99)
+        assert contact.email is None
+        assert contact.numbers.main == "1000"
