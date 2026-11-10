@@ -3,6 +3,23 @@
     {
       "unresolved": true,
       "key": {
+        "uuid": "5f5642bf_247a5d6e",
+        "filename": "app/request_trace.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 57,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-10T14:38:12Z",
+      "side": 1,
+      "message": "[Medium] Matching any key that contains `password`/`secret` also redacts fields that are not secret. This happens both in `sanitize_data` and in the text fallback (`_SENSITIVE_TEXT_RE`):\n\n```\n{\"passwordless\": \"***\", \"i_password_policy\": \"***\", \"password_expired\": \"***\",\n \"is_password_set\": \"***\", \"password_lifetime\": \"***\"}\n```\n\n`password_expired` and `i_password_policy` are exactly what you look for when investigating why a sign-in fails, so hiding them costs real diagnostics and protects nothing.\n\nOptions:\n- redact only string values, and pass bools and numbers through as they are; or\n- narrow the rule to a whole word or suffix (`password`, `*_password`, `*_secret`).\n\nOn the positive side, `one_time_password` (the `AccessControl/verify_otp` param) is now hidden only because of this rule. Whatever variant is chosen, please pin that key in a test so it does not regress.",
+      "revId": "56b21937d6d3e3f57c480ee5df580a98a3af6b29",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
         "uuid": "a42ffe66_096cb8e6",
         "filename": "app/request_trace.py",
         "patchSetId": 1
