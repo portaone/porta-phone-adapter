@@ -3,6 +3,23 @@
     {
       "unresolved": true,
       "key": {
+        "uuid": "a42ffe66_096cb8e6",
+        "filename": "app/request_trace.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 83,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-10T14:38:12Z",
+      "side": 1,
+      "message": "[Medium] Short local parts give away too much.\n\nCurrent output:\n\n| local part | result | revealed |\n|---|---|---|\n| `a@x.io` | `a***@x.io` | the **whole** local part |\n| `ab@x.io` | `a***@x.io` | half of it |\n| `abc@x.io` | `a***@x.io` | 1 of 3 |\n| `abcdef@x.io` | `ab****ef@x.io` | **4 of 6** |\n\nThe fixed-width stars are good, because they hide the length. Still, a one-character address is fully revealed, and right at the 6-character threshold two thirds of it stay in clear.\n\nSuggestion: scale what is kept with the length:\n- ≤ 2 chars → `***` (nothing kept)\n- 3-5 → `a***`\n- 6-9 → `a****z`\n- ≥ 10 → `ab****yz`\n\nPlease add 1-, 2- and 3-character cases to `test_emails_are_partially_masked`.",
+      "revId": "56b21937d6d3e3f57c480ee5df580a98a3af6b29",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
         "uuid": "67d70e19_dcb8933a",
         "filename": "app/request_trace.py",
         "patchSetId": 1
