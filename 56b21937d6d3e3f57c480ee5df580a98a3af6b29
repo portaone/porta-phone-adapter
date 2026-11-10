@@ -18,6 +18,24 @@
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "909b9d4c_a159e364",
+        "filename": "app/request_trace.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 57,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-10T14:48:02Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "5f5642bf_247a5d6e",
+      "revId": "56b21937d6d3e3f57c480ee5df580a98a3af6b29",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "a42ffe66_096cb8e6",
@@ -35,6 +53,24 @@
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "eca1063f_da452bee",
+        "filename": "app/request_trace.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 83,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-10T14:48:02Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "a42ffe66_096cb8e6",
+      "revId": "56b21937d6d3e3f57c480ee5df580a98a3af6b29",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "67d70e19_dcb8933a",
@@ -48,6 +84,24 @@
       "writtenOn": "2026-11-10T14:35:48Z",
       "side": 1,
       "message": "[Major] The password still reaches the log here, at ERROR level.\n\n`validation_exc.errors()` is logged without sanitizing. For a missing field, pydantic v2 puts the whole dict of that level into `input`. Reproduced with `RouteWithLogging` and a body that lacks one required field:\n\n```\nERROR ... Validation exception [..., {\u0027type\u0027: \u0027missing\u0027, \u0027loc\u0027: (\u0027body\u0027, \u0027otp\u0027), \u0027msg\u0027: \u0027Field required\u0027,\n  \u0027input\u0027: {\u0027email\u0027: \u0027john.smith@x\u0027, \u0027password\u0027: \u0027S3cr3t!\u0027}}]\n```\n\nThis line predates the change, but it is squarely within WT-2211\u0027s scope (\"mask secrets in adapter logs\"), and this one is ERROR level, so it shows up in production, not only with DEBUG on. The same unsanitized `str(validation_exc.errors())` is also echoed to the client in the 422 body above.\n\nSuggested fix: `logging.error(f\"Validation exception {sanitize_data(validation_exc.errors())}\")`. `sanitize_data` already recurses into lists and dicts, and turns the `loc` tuples into lists. Please also add a test, e.g. `POST /session` with a required field missing, asserting the password is not in the log.",
+      "revId": "56b21937d6d3e3f57c480ee5df580a98a3af6b29",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "dcf09419_7b20b934",
+        "filename": "app/request_trace.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 330,
+      "author": {
+        "id": 850
+      },
+      "writtenOn": "2026-11-10T14:48:02Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "67d70e19_dcb8933a",
       "revId": "56b21937d6d3e3f57c480ee5df580a98a3af6b29",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     }
