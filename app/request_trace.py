@@ -7,6 +7,7 @@ import uuid
 from typing import Callable, Optional
 
 from fastapi import HTTPException, Request, Response
+from pydantic import BaseModel
 from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -46,8 +47,44 @@ SECRET_KEYS = {
 TOKEN_KEYS = {
     "access_token", "refresh_token", "token", "authorization",
     "api_key", "session_id",
+    # PortaBilling's account api_token signs the account in (Session/login token=),
+    # config_token is the auto-provision sign-in credential (WT-2211).
+    "api_token", "config_token",
 }
 _ALL_SENSITIVE_KEYS = SECRET_KEYS | TOKEN_KEYS
+#: Any key containing one of these is a secret too, e.g. PortaBilling's h323_password
+#: (the account's SIP password) in Account/get_account_info replies (WT-2211).
+SECRET_KEY_PARTS = ("password", "secret")
+
+# Bounded quantifiers and the lookbehinds keep this linear on long runs of these
+# characters, which the body of any request can contain. A SIP URI (sip:101@host) is
+# an address on the PBX, not an e-mail, and is left alone.
+_EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])(?<!sip:)(?<!sips:)([A-Za-z0-9._%+-]{1,64})@([A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8})"
+)
+
+
+def _is_secret_key(key: str) -> bool:
+    key = key.lower()
+    return key in SECRET_KEYS or any(part in key for part in SECRET_KEY_PARTS)
+
+
+def mask_email(value):
+    """Partially mask every e-mail address in ``value``: ``vo****an@portaone.com``.
+
+    The domain is kept, and so are two characters on each end of the local part
+    (one at the start when it is too short), so a log line still tells whose it is
+    to someone who already knows."""
+    if not isinstance(value, str):
+        return value
+
+    def _mask(m):
+        local, domain = m.group(1), m.group(2)
+        if len(local) >= 6:
+            return f"{local[:2]}****{local[-2:]}@{domain}"
+        return f"{local[:1]}***@{domain}"
+
+    return _EMAIL_RE.sub(_mask, value)
 
 
 def mask_secret(value):
@@ -73,10 +110,18 @@ def sanitize_data(obj):
 
     Recurses into dicts/lists and never mutates the input, so the caller may
     still send the original structure in a real request after logging it."""
+    if isinstance(obj, BaseModel):
+        try:
+            obj = obj.model_dump()
+        except Exception:
+            return "<unloggable>"
     if isinstance(obj, dict):
+        # The OTP verify request: its "code" signs the user in. "code" alone is not
+        # masked, since every error reply carries one (access_token_expired, ...).
+        otp_verify = "otp_id" in obj
         result = {}
         for k, v in obj.items():
-            if isinstance(k, str) and k.lower() in SECRET_KEYS:
+            if isinstance(k, str) and (_is_secret_key(k) or (otp_verify and k.lower() == "code")):
                 result[k] = mask_secret(v)
             elif isinstance(k, str) and k.lower() in TOKEN_KEYS:
                 result[k] = mask_token(v)
@@ -85,18 +130,21 @@ def sanitize_data(obj):
         return result
     if isinstance(obj, (list, tuple)):
         return [sanitize_data(v) for v in obj]
+    if isinstance(obj, str):
+        return mask_email(obj)
     return obj
 
 
 _SENSITIVE_TEXT_RE = re.compile(
     r'(?i)("?(?:' + "|".join(sorted(_ALL_SENSITIVE_KEYS, key=len, reverse=True)) +
+    r"|\b\w{0,40}(?:" + "|".join(SECRET_KEY_PARTS) + r")\w{0,40}" +
     r')"?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^&\s,}]+)'
 )
 
 
 def _mask_text_fallback(text: str) -> str:
     """Mask sensitive values in a non-JSON string (form-encoded / plain text)."""
-    return _SENSITIVE_TEXT_RE.sub(lambda m: f'{m.group(1)}"***"', text)
+    return mask_email(_SENSITIVE_TEXT_RE.sub(lambda m: f'{m.group(1)}"***"', text))
 
 
 def sanitize_text(text):
