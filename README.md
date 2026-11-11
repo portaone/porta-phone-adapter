@@ -406,12 +406,17 @@ id, and the identifier looks like an address (one `@`, a dot in the domain, no `
 the open accounts searched by their email field — across every customer the admin user
 can see.
 
-Exactly one account must hold the address, compared without case against each entry of
-the field, a `Name <address>` entry included — the rule PortaBilling itself uses for
-password reset. With none the answer is `404`, with several `422 ambiguous_user_ref`,
-and no code is sent either way. The search is a substring match, so every page of
-candidates is checked; at 10 000 candidates or more the sign-in is refused with the same
-`422` rather than decided on part of the list. No account is ever created.
+Exactly one account must have the address as its whole email field (WT-2279). A field
+that lists several addresses (`a@x.com, b@x.com`) or holds a name (`John <a@x.com>`) does
+not match. Case is ignored as far as the PortaBilling database ignores it, which its
+default collations do. With none the answer is `404`, with several `422
+ambiguous_user_ref`, and no code is sent either way; at 10 000 matching rows or more the
+sign-in is refused with the same `422` rather than decided on part of the list. No
+account is ever created.
+
+PortaBilling has no index on the account email field, so on a large installation every
+lookup reads the whole accounts table and can run past `PORTASWITCH_API_TIMEOUT`. The
+search sends the address without wildcards so that an index, once added, serves it.
 
 Review accounts listed in `OTP_IGNORE_ACCOUNTS` should keep signing in by id. That list
 is compared with what the user typed, and an email is not unique in PortaBilling: once
