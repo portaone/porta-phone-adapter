@@ -754,8 +754,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise ambiguous_user_error()
 
             offset += len(rows)
-            total = resp.get("total")
-            if len(rows) < EMAIL_LOOKUP_PAGE or (total is not None and offset >= int(total)):
+            if len(rows) < EMAIL_LOOKUP_PAGE:
                 break
             if offset >= EMAIL_LOOKUP_MAX_ROWS:
                 logging.warning(f"OTP sign-in by email refused: more than {offset} candidate accounts")

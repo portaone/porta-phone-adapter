@@ -410,7 +410,7 @@ Exactly one account must hold the address, compared without case against each en
 the field, a `Name <address>` entry included — the rule PortaBilling itself uses for
 password reset. With none the answer is `404`, with several `422 ambiguous_user_ref`,
 and no code is sent either way. The search is a substring match, so every page of
-candidates is checked; above 10 000 candidates the sign-in is refused with the same
+candidates is checked; at 10 000 candidates or more the sign-in is refused with the same
 `422` rather than decided on part of the list. No account is ever created.
 
 Review accounts listed in `OTP_IGNORE_ACCOUNTS` should keep signing in by id. That list
