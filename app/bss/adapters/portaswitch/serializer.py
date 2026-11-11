@@ -2,7 +2,7 @@ import base64
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Set
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
@@ -440,12 +440,12 @@ class Serializer:
         )
 
     @staticmethod
-    def get_cdr_info(cdr_info: dict, by_cr_download_ids: bool = True) -> CDRInfo:
+    def get_cdr_info(cdr_info: dict, recorded_xdrs: Optional[Set[int]] = None) -> CDRInfo:
         """Forms CDRInfo based on the input cdr_info.
 
         Parameters:
             :cdr_info (dict): The information about the CDR to be added to CDRInfo.
-            :by_cr_download_ids (bool): How a recording is detected, see _call_recording_exist.
+            :recorded_xdrs (Set[int] | None): How a recording is detected, see _call_recording_exist.
 
         Returns:
             :(CDRInfo): The filled structure of CDRInfo.
@@ -464,7 +464,7 @@ class Serializer:
             duration=cdr_info["charged_quantity"],
             recording_id=(
                 Serializer.compose_recording_id(cdr_info)
-                if Serializer._call_recording_exist(cdr_info, by_cr_download_ids)
+                if Serializer._call_recording_exist(cdr_info, recorded_xdrs)
                 else None
             ),
             status=Serializer.parse_call_status(cdr_info)
@@ -582,16 +582,16 @@ class Serializer:
             return ConnectStatus.error
 
     @staticmethod
-    def _call_recording_exist(cdr, by_cr_download_ids: bool = True) -> bool:
+    def _call_recording_exist(cdr, recorded_xdrs: Optional[Set[int]] = None) -> bool:
         """Tells whether a call recording exists.
 
-        From MR129 on, by the cr_download_ids the billing returns only for
-        get_xdr_list(with_cr_download_ids=1): the bit_flags bit 64 that used to carry
-        this is not set anymore there (IUN-1014, WT-1939). Before MR129, by that bit,
-        because the flag makes get_xdr_list 50-300 times slower there (WT-2241).
+        From MR129 on, by recorded_xdrs: the i_xdr of the calls that
+        get_xdr_list(call_recording=1) returns, because the bit_flags bit 64 that used
+        to carry this is not set anymore there (IUN-1014, WT-1939, WT-2283). Before
+        MR129 recorded_xdrs is None and the bit is read (WT-2241).
         """
-        if by_cr_download_ids:
-            return bool(cdr.get("cr_download_ids"))
+        if recorded_xdrs is not None:
+            return cdr.get("i_xdr") is not None and int(cdr["i_xdr"]) in recorded_xdrs
         return (int(cdr.get("bit_flags") or 0) & 64) != 0
 
     @staticmethod

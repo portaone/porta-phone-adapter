@@ -5,7 +5,7 @@ import time
 import uuid
 from inspect import isawaitable
 from datetime import datetime, timedelta, UTC
-from typing import AsyncIterator, Awaitable, Callable, Final, Optional, Dict, List, Union
+from typing import AsyncIterator, Awaitable, Callable, Final, Optional, Dict, List, Set, Union
 
 import urllib3
 from urllib.parse import urlsplit
@@ -98,10 +98,14 @@ from .utils import generate_otp_id, extract_fault_code, generate_hash_dictionary
 
 PORTASWITCH_VERSION_WITH_TOKEN: Final[str] = "MR128"
 #: str: First release whose get_xdr_list no longer sets bit_flags bit 64 for a recorded
-#: call (IUN-1014), so recordings can only be seen through with_cr_download_ids (WT-1939).
-#: Earlier releases keep the bit, and there the flag makes the request 50-300 times
-#: slower (WT-2241), so it is sent only from this release on.
-PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS: Final[str] = "MR129"
+#: call (IUN-1014), so recordings are found by a second get_xdr_list with
+#: call_recording=1, which reads the Call_Recordings table (WT-2283). Earlier releases
+#: keep the bit (WT-2241).
+PORTASWITCH_VERSION_RECORDING_REGISTRY: Final[str] = "MR129"
+#: int: Smallest limit of the call_recording=1 lookup of a history page. Calls of other
+#: pages that share its first or last second also fall in the range, and the lookup
+#: is a cheap database query.
+RECORDED_XDR_LOOKUP_MIN_LIMIT: Final[int] = 100
 #: int: Seconds to reuse the PortaSwitch version read for call history. Long enough that
 #: history pays no admin round trip per request, short enough that an MR upgrade or a
 #: switch to a DR site on another release is picked up within the hour, without a restart.
@@ -542,19 +546,67 @@ class PortaSwitchAdapter(BSSAdapter):
         self._portaswitch_version_cache = (time.monotonic(), release)
         return release
 
-    async def _recordings_by_cr_download_ids(self) -> bool:
-        """Tells how call history detects a recorded call (WT-2241).
+    async def _recordings_by_registry(self) -> bool:
+        """Tells how call history detects a recorded call (WT-2241, WT-2283).
 
-        From PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS on, by the cr_download_ids that
-        get_xdr_list returns only for with_cr_download_ids=1: bit_flags bit 64 is not
-        set there anymore (WT-1939). Before that release, by bit 64, without the flag,
-        which slows the request down 50-300 times there. When the version cannot be
-        read, by cr_download_ids: correct on every release, only slow on old ones.
+        From PORTASWITCH_VERSION_RECORDING_REGISTRY on, by a second get_xdr_list with
+        call_recording=1 (see _recorded_xdrs): bit_flags bit 64 is not set there
+        anymore (WT-1939). Before that release, by bit 64. When the version cannot be
+        read, by the second request too: before MR129 call_recording=1 filters by that
+        same bit, so it is correct on every release.
         """
         release = await self._portaswitch_release()
         if release is None:
             return True
-        return release >= [int(d) for d in re.findall(r"\d+", PORTASWITCH_VERSION_WITH_CR_DOWNLOAD_IDS)]
+        return release >= [int(d) for d in re.findall(r"\d+", PORTASWITCH_VERSION_RECORDING_REGISTRY)]
+
+    async def _recorded_xdrs(self, access_token: str, xdr_list: List[dict]) -> Set[int]:
+        """Returns the i_xdr of the recorded calls among xdr_list, one history page (WT-2283).
+
+        Asks get_xdr_list again with call_recording=1, a database filter, instead of
+        with_cr_download_ids=1, which lists the recording storage over SFTP for every
+        recorded call and took up to a minute per page. The range is narrowed to the
+        bill_time of the page's own rows, the field from_date/to_date filter on: the
+        page's range with offset 0 would return the newest recorded calls of the
+        whole range, not this page's. to_date is exclusive, hence the extra second.
+        The list is ordered by bill_time, so the narrowed range holds the page plus
+        only the calls that share its first or last second; the limit leaves room
+        for them, at least RECORDED_XDR_LOOKUP_MIN_LIMIT for a short page.
+
+        A failure leaves the page without recordings rather than failing history.
+        """
+        bill_times = []
+        for xdr in xdr_list:
+            try:
+                bill_times.append(datetime.strptime(xdr["bill_time"], "%Y-%m-%d %H:%M:%S"))
+            except (KeyError, TypeError, ValueError):
+                logging.warning(f"xDR {xdr.get('i_xdr')} has no usable bill_time: {xdr.get('bill_time')!r}")
+                return set()
+        if not bill_times:
+            return set()
+
+        try:
+            result = await self._account_api.get_xdr_list(
+                access_token=access_token,
+                page=1,
+                items_per_page=max(2 * len(xdr_list), RECORDED_XDR_LOOKUP_MIN_LIMIT),
+                time_from=min(bill_times),
+                time_to=max(bill_times) + timedelta(seconds=1),
+                call_recording=True,
+                get_total=False,
+            )
+        except WebTritErrorException as error:
+            # account.py has already mapped a refused session token to this one.
+            if error.code == "access_token_expired":
+                raise
+            logging.warning(f"Failed to read the recorded calls of the history page: {error!r}")
+            return set()
+        except Exception as e:
+            logging.warning(f"Failed to read the recorded calls of the history page: {e!r}")
+            return set()
+
+        page_xdrs = {int(xdr["i_xdr"]) for xdr in xdr_list if xdr.get("i_xdr") is not None}
+        return {int(xdr["i_xdr"]) for xdr in result.get("xdr_list", []) if xdr.get("i_xdr") is not None} & page_xdrs
 
     async def _notification_email(self) -> Optional[str]:
         """Returns the email OTP codes are sent from, or None if it cannot be read.
@@ -2002,18 +2054,22 @@ class PortaSwitchAdapter(BSSAdapter):
                 # Cleared up to the end of the range: nothing the switch could return.
                 return [], 0
 
-            by_cr_download_ids = await self._recordings_by_cr_download_ids()
+            access_token = safely_extract_scalar_value(session.access_token)
             result: dict = await self._account_api.get_xdr_list(
-                access_token=safely_extract_scalar_value(session.access_token),
+                access_token=access_token,
                 page=page,
                 items_per_page=items_per_page,
                 time_from=time_from,
                 time_to=time_to,
-                with_cr_download_ids=by_cr_download_ids,
             )
 
+            recorded_xdrs = (
+                await self._recorded_xdrs(access_token, result["xdr_list"])
+                if await self._recordings_by_registry()
+                else None
+            )
             return [
-                Serializer.get_cdr_info(cdr, by_cr_download_ids=by_cr_download_ids) for cdr in result["xdr_list"]
+                Serializer.get_cdr_info(cdr, recorded_xdrs=recorded_xdrs) for cdr in result["xdr_list"]
             ], result["total"]
 
         except WebTritErrorException as error:
