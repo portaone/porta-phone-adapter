@@ -208,15 +208,18 @@ path to a transcript.
 ### Whether a call has a recording depends on the release
 
 From MR129 on, `get_xdr_list` no longer sets `bit_flags` bit 64 for a recorded call
-(IUN-1014), and the only signal is `cr_download_ids`, returned only for
-`with_cr_download_ids=1` (WT-1939). On earlier releases that flag is documented and
-works, but makes the request 50-300 times slower (MR120: 0.2 s → 20-60 s), which
-pushed history into the timeout and filled Core's pool to the adapter (WT-2241).
-So `retrieve_calls` reads `Generic/get_version` (cached an hour, a failure a minute)
-and sends the flag only from MR129 on; before it, it reads bit 64 as the adapter did
-before WT-1939. Do not send the flag unconditionally again, and do not read bit 64 on
-MR129+ — there it is stale. An unreadable version falls back to the flag: correct
-everywhere, slow only on old releases.
+(IUN-1014). `with_cr_download_ids=1` does report recordings (WT-1939), but PortaBilling
+builds it by listing the recording storage over SFTP for every recorded call — up to a
+minute per page on a busy switch, and slower still before MR129 (WT-2241). It is never
+sent. Instead `retrieve_calls` asks `get_xdr_list` a second time with
+`call_recording=1`, a database filter on `Call_Recordings`, and marks the page rows it
+returns (`_recorded_xdrs`, WT-2283). That request is narrowed to the `bill_time` of the
+page's own rows — the field `from_date`/`to_date` filter on, `to_date` exclusive, hence
++1 s: the page's whole range with offset 0 would return the newest recorded calls, not
+this page's. Below MR129 (`Generic/get_version`, cached an hour, a failure a minute)
+there is no second request and bit 64 is read; do not read it on MR129+, it is stale
+there. An unreadable version takes the second request: below MR129 `call_recording=1`
+filters by that same bit, so it is correct everywhere.
 
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 

@@ -39,51 +39,52 @@ def _make_cdr(**overrides) -> dict:
     return cdr
 
 
+RECORDED = {129580143}
+
+
 class TestCallRecordingExist:
-    def test_non_empty_cr_download_ids_means_recording_exists(self):
-        cdr = _make_cdr(cr_download_ids=["E0C5281F_E5B8480E_1D3207FE_019AFB34"])
-        assert Serializer._call_recording_exist(cdr) is True
+    """From MR129 on a recording is the i_xdr being among the calls that
+    get_xdr_list(call_recording=1) returned for the page (WT-2283)."""
 
-    def test_empty_cr_download_ids_means_no_recording(self):
-        cdr = _make_cdr(cr_download_ids=[])
-        assert Serializer._call_recording_exist(cdr) is False
+    def test_an_xdr_in_the_recorded_set_has_a_recording(self):
+        assert Serializer._call_recording_exist(_make_cdr(), {129580143}) is True
 
-    def test_absent_cr_download_ids_means_no_recording(self):
-        # The field is missing entirely when the billing reports no recording for the XDR.
-        cdr = _make_cdr()
-        assert Serializer._call_recording_exist(cdr) is False
+    def test_an_xdr_outside_the_recorded_set_has_none(self):
+        assert Serializer._call_recording_exist(_make_cdr(), {129580144}) is False
+
+    def test_an_empty_recorded_set_means_no_recording(self):
+        assert Serializer._call_recording_exist(_make_cdr(), set()) is False
 
     def test_legacy_bit_flags_64_no_longer_signals_a_recording(self):
         # Since MR129 the bit is not authoritative and since MR131 it is not set at all;
         # relying on it is what made every recording invisible in the dialer (WT-1939).
         cdr = _make_cdr(bit_flags=4 | 64)
-        assert Serializer._call_recording_exist(cdr) is False
+        assert Serializer._call_recording_exist(cdr, set()) is False
+
+    def test_cr_download_ids_is_not_consulted(self):
+        cdr = _make_cdr(cr_download_ids=["E0C5281F_E5B8480E_1D3207FE_019AFB34"])
+        assert Serializer._call_recording_exist(cdr, set()) is False
 
 
 class TestCallRecordingExistBeforeMR129:
-    """Before MR129 the bit is what carries a recording, and get_xdr_list is asked
-    without with_cr_download_ids, so cr_download_ids is never there (WT-2241)."""
+    """Before MR129 the bit is what carries a recording (WT-2241)."""
 
     def test_bit_flags_64_means_recording_exists(self):
         cdr = _make_cdr(bit_flags=4 | 64)
-        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is True
+        assert Serializer._call_recording_exist(cdr) is True
 
     def test_no_bit_64_means_no_recording(self):
         cdr = _make_cdr(bit_flags=4)
-        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is False
+        assert Serializer._call_recording_exist(cdr) is False
 
     def test_absent_bit_flags_means_no_recording(self):
         cdr = _make_cdr()
         del cdr["bit_flags"]
-        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is False
-
-    def test_cr_download_ids_is_not_consulted(self):
-        cdr = _make_cdr(bit_flags=4, cr_download_ids=["E0C5281F_E5B8480E_1D3207FE_019AFB34"])
-        assert Serializer._call_recording_exist(cdr, by_cr_download_ids=False) is False
+        assert Serializer._call_recording_exist(cdr) is False
 
     def test_recording_id_carries_both_billing_keys(self):
         cdr = _make_cdr(bit_flags=4 | 64)
-        recording_id = Serializer.get_cdr_info(cdr, by_cr_download_ids=False).recording_id.root
+        recording_id = Serializer.get_cdr_info(cdr).recording_id.root
         assert Serializer.parse_recording_id(recording_id) == (
             "129580143", "062BDBD0 7366C3AD 6ED2EA7A 66D2F473"
         )
@@ -91,10 +92,10 @@ class TestCallRecordingExistBeforeMR129:
 
 class TestGetCdrInfoRecordingId:
     def test_recording_id_carries_both_billing_keys(self):
-        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        cdr = _make_cdr()
         # The audio is downloaded by i_xdr, the transcript by h323_conf_id, and nothing
         # in the PortaBilling API maps one to the other (WT-1963).
-        recording_id = Serializer.get_cdr_info(cdr).recording_id.root
+        recording_id = Serializer.get_cdr_info(cdr, RECORDED).recording_id.root
         assert Serializer.parse_recording_id(recording_id) == (
             "129580143", "062BDBD0 7366C3AD 6ED2EA7A 66D2F473"
         )
@@ -102,26 +103,26 @@ class TestGetCdrInfoRecordingId:
     def test_recording_id_is_url_safe(self):
         # Core interpolates this value into a URL path without escaping it, and
         # h323_conf_id contains spaces.
-        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
-        recording_id = Serializer.get_cdr_info(cdr).recording_id.root
+        cdr = _make_cdr()
+        recording_id = Serializer.get_cdr_info(cdr, RECORDED).recording_id.root
         assert quote(recording_id, safe="") == recording_id
 
     def test_recording_id_falls_back_to_the_xdr_id_without_a_conf_id(self):
-        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        cdr = _make_cdr()
         del cdr["h323_conf_id"]
-        assert Serializer.get_cdr_info(cdr).recording_id.root == "129580143"
+        assert Serializer.get_cdr_info(cdr, RECORDED).recording_id.root == "129580143"
 
     def test_recording_id_is_none_without_a_recording(self):
-        assert Serializer.get_cdr_info(_make_cdr()).recording_id is None
+        assert Serializer.get_cdr_info(_make_cdr(), set()).recording_id is None
 
     def test_recording_id_is_none_for_a_stale_bit_flag(self):
         cdr = _make_cdr(bit_flags=4 | 64)
-        assert Serializer.get_cdr_info(cdr).recording_id is None
+        assert Serializer.get_cdr_info(cdr, set()).recording_id is None
 
 
 class TestParseRecordingId:
     def test_round_trip(self):
-        cdr = _make_cdr(cr_download_ids=["062BDBD0 7366C3AD 6ED2EA7A 66D2F473_0"])
+        cdr = _make_cdr()
         assert Serializer.parse_recording_id(Serializer.compose_recording_id(cdr)) == (
             "129580143", "062BDBD0 7366C3AD 6ED2EA7A 66D2F473"
         )
