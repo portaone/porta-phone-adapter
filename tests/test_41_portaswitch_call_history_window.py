@@ -318,7 +318,6 @@ async def test_get_xdr_list_pins_the_payload_sent_to_the_switch():
         "i_service_type": 3,
         "get_total": 1,
         "show_unsuccessful": 1,
-        "with_cr_download_ids": 1,
         "limit": 40,
         "offset": 80,
         "from_date": "2026-09-05 06:08:39",
@@ -327,8 +326,9 @@ async def test_get_xdr_list_pins_the_payload_sent_to_the_switch():
 
 
 @pytest.mark.asyncio
-async def test_get_xdr_list_leaves_out_with_cr_download_ids_when_told_to():
-    """Before MR129 the flag makes the request 50-300 times slower (WT-2241)."""
+async def test_get_xdr_list_asks_for_recorded_calls_only_when_told_to():
+    """call_recording=1 is the database filter recordings are found by (WT-2283);
+    with_cr_download_ids is never sent, it lists the recording storage over SFTP."""
     api = object.__new__(AccountAPI)
     sent = {}
 
@@ -341,13 +341,23 @@ async def test_get_xdr_list_leaves_out_with_cr_download_ids_when_told_to():
     await api.get_xdr_list(
         access_token="token",
         page=1,
-        items_per_page=40,
+        items_per_page=80,
         time_from=datetime(2026, 9, 5, 6, 8, 39),
-        time_to=datetime(2026, 9, 6, 6, 8, 39),
-        with_cr_download_ids=False,
+        time_to=datetime(2026, 9, 6, 6, 8, 40),
+        call_recording=True,
+        get_total=False,
     )
 
-    assert "with_cr_download_ids" not in sent["params"]
+    assert sent["params"] == {
+        "i_service_type": 3,
+        "get_total": 0,
+        "show_unsuccessful": 1,
+        "call_recording": 1,
+        "limit": 80,
+        "offset": 0,
+        "from_date": "2026-09-05 06:08:39",
+        "to_date": "2026-09-06 06:08:40",
+    }
 
 
 @pytest.mark.asyncio

@@ -211,7 +211,7 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
 
     async def get_xdr_list(
             self, access_token: str, page: int, items_per_page: int, time_from: datetime, time_to: datetime,
-            with_cr_download_ids: bool = True,
+            call_recording: bool = False, get_total: bool = True,
     ) -> dict:
         """Returns the account_info of the account, which created a session related to
         the access_token.
@@ -223,8 +223,10 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
             :items_per_page (int): Shows the number of items to return.
             :time_from (datetime): Filters the time frame of the CDR history.
             :time_to (datetime): Filters the time frame of the CDR history.
-            :with_cr_download_ids (bool): Ask for the cr_download_ids of recorded calls.
-                Needed from MR129 on, very slow before it (WT-2241).
+            :call_recording (bool): Return only the recorded calls. A database filter,
+                unlike with_cr_download_ids, which lists the recording storage over SFTP
+                for every recorded call and is never sent (WT-2283).
+            :get_total (bool): Ask for the total count of the filtered records.
 
         Returns:
             :(dict): The API method execution result that contains an account info.
@@ -232,15 +234,15 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
         """
         params = {
             "i_service_type": 3,
-            "get_total": 1,
+            "get_total": 1 if get_total else 0,
             "show_unsuccessful": 1,
             "limit": items_per_page,
             "offset": items_per_page * (page - 1),
             "from_date": time_from.strftime("%Y-%m-%d %H:%M:%S"),
             "to_date": time_to.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        if with_cr_download_ids:
-            params["with_cr_download_ids"] = 1
+        if call_recording:
+            params["call_recording"] = 1
 
         return await self.__send_request(
             module="Account",
