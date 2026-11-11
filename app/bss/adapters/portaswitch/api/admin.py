@@ -114,11 +114,12 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
         )
 
     async def find_accounts_by_email(self, email: str, limit: int = 1000, offset: int = 0) -> dict:
-        """Returns the open accounts, of any customer, whose email field contains `email`.
+        """Returns the open accounts, of any customer, whose email field is `email`.
 
-        PortaBilling treats the filter as a LIKE pattern, so the rows are candidates
-        only: `_` and `%` in the address, a longer address and the other entries of a
-        comma-separated email field all match too. The caller compares exactly.
+        The address goes without wildcards, so PortaBilling compares the whole field
+        with `=` (Porta/Account.pm) and an index on the field could serve it (WT-2279).
+        A `%` anywhere in the value would turn that into a LIKE, so the caller never
+        passes one. Whether case counts is up to the database's collation.
 
         Parameters:
             :email (str): The address to look for.
@@ -137,7 +138,7 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
             module="Account",
             method="get_account_list",
             params={
-                "email": f"%{email}%",
+                "email": email,
                 "get_not_closed_accounts": 1,
                 "get_only_real_accounts": 1,
                 "get_total": 0,
