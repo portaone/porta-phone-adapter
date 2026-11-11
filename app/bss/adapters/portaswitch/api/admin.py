@@ -125,8 +125,12 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
             :limit (int): Maximum number of accounts to return.
             :offset (int): Number of accounts to skip.
 
+        No total is asked for: without an index on the email field PortaBilling
+        counts by scanning every account a second time, which doubled the lookup
+        (WT-2279). The caller stops on a short page instead.
+
         Returns:
-            :(dict): The API method execution result: the accounts and their total.
+            :(dict): The API method execution result: the accounts, without a total.
 
         """
         return await self._send_request(
@@ -136,7 +140,7 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
                 "email": f"%{email}%",
                 "get_not_closed_accounts": 1,
                 "get_only_real_accounts": 1,
-                "get_total": 1,
+                "get_total": 0,
                 "limit": limit,
                 "offset": offset,
             },

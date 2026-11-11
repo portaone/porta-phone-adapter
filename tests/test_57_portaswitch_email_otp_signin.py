@@ -62,7 +62,8 @@ class FakeAdminAPI:
             for a in self._accounts.values()
             if needle in (a["email"] or "").lower()
         ]
-        return {"account_list": rows[offset : offset + limit], "total": len(rows)}
+        # No total: the adapter asks for none (WT-2279).
+        return {"account_list": rows[offset : offset + limit]}
 
     async def create_otp(self, i_account, delivery_channel):
         self.created_otps.append(i_account)
@@ -236,7 +237,17 @@ class TestCandidatePages:
     @pytest.mark.asyncio
     async def test_a_match_past_the_first_page_is_found(self, monkeypatch):
         monkeypatch.setattr(adapter_module, "EMAIL_LOOKUP_PAGE", 2)
-        subject = adapter(self.candidates(5) + [account(101, EMAIL)])
+        subject = adapter(self.candidates(4) + [account(101, EMAIL)])
+
+        await request_otp(subject)
+
+        assert subject._admin_api.created_otps == [101]
+        assert [offset for _, offset in subject._admin_api.email_searches] == [0, 2, 4]
+
+    @pytest.mark.asyncio
+    async def test_a_full_last_page_is_followed_by_an_empty_one(self, monkeypatch):
+        monkeypatch.setattr(adapter_module, "EMAIL_LOOKUP_PAGE", 2)
+        subject = adapter(self.candidates(3) + [account(101, EMAIL)])
 
         await request_otp(subject)
 
@@ -275,6 +286,26 @@ class TestCandidatePages:
 
         assert error.value.code == "ambiguous_user_ref"
         assert subject._admin_api.created_otps == []
+
+
+@pytest.mark.asyncio
+async def test_the_search_asks_for_no_total():
+    # Counting the candidates is a second scan of every account (WT-2279).
+    from bss.adapters.portaswitch.api.admin import AdminAPI
+
+    sent = []
+
+    async def send_request(**request):
+        sent.append(request)
+        return {"account_list": []}
+
+    api = object.__new__(AdminAPI)
+    api._send_request = send_request
+
+    await api.find_accounts_by_email(EMAIL, limit=1000, offset=0)
+
+    assert sent[0]["params"]["get_total"] == 0
+    assert sent[0]["params"]["email"] == f"%{EMAIL}%"
 
 
 def test_the_apps_are_told_an_email_is_accepted():
