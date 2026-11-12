@@ -22,12 +22,33 @@ class TestXdrToCallStatus:
     def test_outgoing_failed_cause1_returns_failed(self):
         assert Serializer._xdr_to_call_status(True, 1, Direction.outgoing) == ConnectStatus.failed
 
-    def test_incoming_failed_cause1_returns_error(self):
-        assert Serializer._xdr_to_call_status(True, 1, Direction.incoming) == ConnectStatus.error
+    def test_incoming_failed_cause1_returns_missed(self):
+        assert Serializer._xdr_to_call_status(True, 1, Direction.incoming) == ConnectStatus.missed
 
-    def test_failed_cause16_returns_declined(self):
-        assert Serializer._xdr_to_call_status(True, 16, Direction.incoming) == ConnectStatus.declined
+    def test_outgoing_failed_cause16_returns_declined(self):
         assert Serializer._xdr_to_call_status(True, 16, Direction.outgoing) == ConnectStatus.declined
+        assert Serializer._xdr_to_call_status(True, 16, Direction.forwarded) == ConnectStatus.declined
+
+    def test_incoming_failed_cause16_returns_missed(self):
+        # the caller hung up while it rang; PortaSwitch writes 16 on the callee's leg (WT-2280)
+        assert Serializer._xdr_to_call_status(True, 16, Direction.incoming) == ConnectStatus.missed
+
+    def test_incoming_failed_cause27_returns_missed(self):
+        # the callee is not registered; PortaSIP answers 480 itself, mapped to 27 (WT-2280)
+        assert Serializer._xdr_to_call_status(True, 27, Direction.incoming) == ConnectStatus.missed
+
+    def test_incoming_failed_cause0_returns_missed(self):
+        # "Valid cause code not yet received"
+        assert Serializer._xdr_to_call_status(True, 0, Direction.incoming) == ConnectStatus.missed
+
+    def test_incoming_failed_cause26_returns_completed_elsewhere(self):
+        # Non-selected user clearing: another hunt-group member answered
+        assert Serializer._xdr_to_call_status(True, 26, Direction.incoming) == ConnectStatus.completed_elsewhere
+
+    def test_not_incoming_failed_cause27_and_26_stay_error(self):
+        for direction in (Direction.outgoing, Direction.forwarded, Direction.unknown):
+            assert Serializer._xdr_to_call_status(True, 27, direction) == ConnectStatus.error
+            assert Serializer._xdr_to_call_status(True, 26, direction) == ConnectStatus.error
 
     def test_failed_cause19_returns_missed(self):
         assert Serializer._xdr_to_call_status(True, 19, Direction.incoming) == ConnectStatus.missed
@@ -61,8 +82,13 @@ class TestXdrToCallStatus:
         assert Serializer._xdr_to_call_status(False, 16, Direction.outgoing) == ConnectStatus.accepted
 
     def test_unknown_cause_returns_error(self):
-        assert Serializer._xdr_to_call_status(True, 99, Direction.incoming) == ConnectStatus.error
+        assert Serializer._xdr_to_call_status(True, 99, Direction.outgoing) == ConnectStatus.error
         assert Serializer._xdr_to_call_status(False, 99, Direction.outgoing) == ConnectStatus.error
+        assert Serializer._xdr_to_call_status(False, 99, Direction.incoming) == ConnectStatus.error
+
+    def test_incoming_unknown_cause_returns_missed(self):
+        # any cause a Reason header can carry; the call still was not answered
+        assert Serializer._xdr_to_call_status(True, 99, Direction.incoming) == ConnectStatus.missed
 
 
 class TestParseCallStatus:
@@ -108,3 +134,20 @@ class TestParseCallStatus:
     def test_unknown_cause_returns_error(self):
         cdr = self._make_cdr(failed=1, disconnect_cause=99)
         assert Serializer.parse_call_status(cdr) == ConnectStatus.error
+
+    def test_incoming_call_the_caller_cancelled_is_missed(self):
+        cdr = self._make_cdr(failed=1, disconnect_cause="16", bit_flags=8)
+        assert Serializer.parse_call_status(cdr) == ConnectStatus.missed
+
+    def test_incoming_call_to_an_unregistered_user_is_missed(self):
+        # bit 64 set alongside the incoming bits, as older releases send it
+        cdr = self._make_cdr(failed=1, disconnect_cause="27", bit_flags=72)
+        assert Serializer.parse_call_status(cdr) == ConnectStatus.missed
+
+    def test_incoming_call_answered_by_another_hunt_member(self):
+        cdr = self._make_cdr(failed=1, disconnect_cause="26", bit_flags=8)
+        assert Serializer.parse_call_status(cdr) == ConnectStatus.completed_elsewhere
+
+    def test_incoming_answered_call_stays_accepted(self):
+        cdr = self._make_cdr(failed=0, disconnect_cause="16", bit_flags=8)
+        assert Serializer.parse_call_status(cdr) == ConnectStatus.accepted
