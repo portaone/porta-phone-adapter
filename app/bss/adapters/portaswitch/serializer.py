@@ -565,12 +565,22 @@ class Serializer:
         caller with, so it means "the callee declined" only on an incoming call.
         Cause 130 "Unreachable, completed elsewhere" (SIP-13984, MR133) marks a hunt-group
         leg another member answered; Q.850 cause 13 is reserved and never sent.
+
+        An unanswered incoming call is missed unless the callee turned it down (17, 21) or
+        another hunt-group member took it (26 "Non-selected user clearing", 130) (WT-2280).
+        The causes it arrives with are not the callee's choice: 16 when the caller hangs up
+        while it rings, 27 when the callee is not registered, and with parse_reason_headers
+        anything a carrier puts in a Reason header - so they are not listed one by one.
         """
+        if failed and direction == Direction.incoming:
+            if disconnect_cause in (17, 21):
+                return ConnectStatus.declined
+            if disconnect_cause in (26, 130):
+                return ConnectStatus.completed_elsewhere
+            return ConnectStatus.missed
         if failed and direction == Direction.outgoing and disconnect_cause == 1:
             return ConnectStatus.failed
         if failed and disconnect_cause in (16, 17):
-            return ConnectStatus.declined
-        elif failed and disconnect_cause == 21 and direction == Direction.incoming:
             return ConnectStatus.declined
         elif failed and disconnect_cause in (18, 19):
             return ConnectStatus.missed
