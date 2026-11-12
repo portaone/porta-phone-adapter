@@ -934,6 +934,14 @@ class VoicemailMessage(BaseModel):
 `null` when the **Adaptee** cannot tell it from the message list.""",
         example="Caller #123010 <123010@sip.webtrit.com>",
     )
+    sender_name: Optional[str] = Field(
+        None,
+        description="""The display name of the sender, as the PBX put it in the message.
+`sender` stays the number to call back.
+
+`null` when the message carries no name.""",
+        example="John Doe",
+    )
     receiver: Optional[str] = Field(
         None,
         description="""The receiver of the message, the same as in its details.
