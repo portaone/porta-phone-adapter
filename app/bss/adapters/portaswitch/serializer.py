@@ -282,20 +282,28 @@ class Serializer:
 
     @staticmethod
     def count_callers_waiting(calls_list: list) -> dict[str, int]:
-        """Maps a hunt group number to the number of callers waiting in its queue.
+        """Maps a call queue (`i_c_queue`, as a string) to the number of callers waiting in it.
 
         Built from CallControl.get_sip_calls_list: a caller sitting in a queue is a call
-        in the "queued" state that carries queue_info. The hunt group is taken from the
-        callee side, which is the queue the call was placed into.
+        in the "queued" state, and queue_info.i_c_queue is the queue it waits in.
+        callee.huntgroup_id is no substitute: it marks the callee's hunt group membership,
+        not routing, so a call queued via an auto attendant has none (WT-2293).
+        PortaBilling sends a missing i_c_queue as 0, which matches no queue.
         """
         waiting: dict[str, int] = {}
         for call in calls_list or []:
-            if call.get("state") != "queued" or not call.get("queue_info"):
+            if call.get("state") != "queued":
                 continue
-            huntgroup_id = (call.get("callee") or {}).get("huntgroup_id")
-            if huntgroup_id:
-                waiting[huntgroup_id] = waiting.get(huntgroup_id, 0) + 1
+            i_c_queue = (call.get("queue_info") or {}).get("i_c_queue")
+            if i_c_queue:
+                key = str(i_c_queue)
+                waiting[key] = waiting.get(key, 0) + 1
         return waiting
+
+    @staticmethod
+    def call_queue_key(huntgroup: dict) -> str:
+        """The key count_callers_waiting uses for this hunt group's call queue."""
+        return str(huntgroup["assigned_callqueue"]["i_c_queue"])
 
     @staticmethod
     def get_call_queue(huntgroup: dict, agent_account_id: str,
