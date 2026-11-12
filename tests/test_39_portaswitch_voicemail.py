@@ -137,6 +137,38 @@ class TestListSenderReceiver:
 
 
 # --------------------------------------------------------------------------- #
+# Serializer: the caller name from UseExtIdAsSender (WT-2225)
+# --------------------------------------------------------------------------- #
+
+class TestSenderName:
+    @pytest.mark.parametrize("header, name", [
+        ("55014 (Operator 2) <555014@ip3.example.com>", "Operator 2"),
+        ('"104 (Jane Doe)" <ph113914x104@ms1.example.com>', "Jane Doe"),
+        ("104 (Sales (HQ)) <ph113914x104@ms1.example.com>", "Sales (HQ)"),
+        ("Caller #555014 <555014@ip3.example.com>", None),
+        ("Caller #anonymous <anonymous@ip3.example.com>", None),
+        ("104 <ph113914x104@ms1.example.com>", None),
+        ("104 () <ph113914x104@ms1.example.com>", None),
+        ("Caller #1001", None),
+    ])
+    def test_name_from_header(self, header, name):
+        assert Serializer.parse_voicemail_message_sender_name(header) == name
+
+    def test_list_row_and_details_carry_name_and_keep_number(self):
+        headers = {
+            "from": "55014 (Operator 2) <555014@ip3.example.com>",
+            "to": "555046 <555046@ip3.example.com>",
+        }
+        message = Serializer.get_voicemail_message(mailbox_message(**headers))
+        details = Serializer.get_voicemail_message_details(mailbox_message(**headers, body_structures=[]))
+        assert (message.sender, message.sender_name) == ("555014", "Operator 2")
+        assert (details.sender, details.sender_name) == ("555014", "Operator 2")
+
+    def test_row_without_headers_has_no_name(self):
+        assert Serializer.get_voicemail_message(mailbox_message()).sender_name is None
+
+
+# --------------------------------------------------------------------------- #
 # patch_voicemail_message: only what was sent is applied
 # --------------------------------------------------------------------------- #
 

@@ -354,6 +354,9 @@ class Serializer:
             receiver=Serializer._list_user_ref(
                 mailbox_message.get("to"), Serializer.parse_voicemail_message_receiver_user_ref
             ),
+            sender_name=Serializer._list_user_ref(
+                mailbox_message.get("from"), Serializer.parse_voicemail_message_sender_name
+            ),
         )
 
     @staticmethod
@@ -500,6 +503,26 @@ class Serializer:
             return match.group(1) or match.group(2)
 
         return sender
+
+    @staticmethod
+    def parse_voicemail_message_sender_name(sender: str) -> Optional[str]:
+        """
+        Extract the caller name from the sender field of a voicemail message.
+
+        PortaSwitch writes the name only with UseExtIdAsSender (VoiceMail section) on,
+        as "<extension> (<name>) <account@host>" (WT-2225).
+
+        Expected formats (examples):
+        1. "123 (John Doe) <1001@pbx>" -> "John Doe"
+        2. "Caller #1001 <1001@pbx>" -> None
+        3. "123 <1001@pbx>" -> None
+        """
+        match = re.match(r'^[^(<]*\((.*)\)"?\s*<', sender)
+
+        if match:
+            return match.group(1).strip() or None
+
+        return None
 
     @staticmethod
     def parse_voicemail_message_receiver_user_ref(receiver: str) -> str:
