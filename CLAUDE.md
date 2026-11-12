@@ -221,6 +221,14 @@ there is no second request and bit 64 is read; do not read it on MR129+, it is s
 there. An unreadable version takes the second request: below MR129 `call_recording=1`
 filters by that same bit, so it is correct everywhere.
 
+### Callers waiting are keyed by `i_c_queue`, not `huntgroup_id`
+
+`count_callers_waiting` keys a `queued` call of `CallControl/get_sip_calls_list` by
+`queue_info.i_c_queue` and `_build_queues` matches it to `assigned_callqueue.i_c_queue`.
+`callee.huntgroup_id` marks the callee's hunt group *membership*, not routing
+(`Porta/SIP/CallControl.pm`), so a caller queued via an auto attendant has none and was
+never counted (WT-2293).
+
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 
 PortaBilling exposes exactly five mailbox calls (`api/account.py`):

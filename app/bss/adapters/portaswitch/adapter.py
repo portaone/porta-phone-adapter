@@ -2750,21 +2750,21 @@ class PortaSwitchAdapter(BSSAdapter):
     def _build_queues(self, huntgroups: List[dict], agent_account_id: str,
                       waiting: Optional[Dict[str, int]]) -> List[CallQueue]:
         """Turns raw hunt groups into the API representation."""
-        if waiting and huntgroups and not any(hg["id"] in waiting for hg in huntgroups):
-            # Both sides are stringly typed: the counters are keyed by the CallControl
-            # callee.huntgroup_id and looked up by the hunt group id. If those namespaces
+        if waiting and huntgroups and not any(Serializer.call_queue_key(hg) in waiting for hg in huntgroups):
+            # Both sides are stringified ints: the counters are keyed by the CallControl
+            # queue_info.i_c_queue and looked up by assigned_callqueue.i_c_queue. If those
             # ever diverge, every queue would silently report 0 - say so instead.
             logging.warning(
                 "Call queue counters match none of the agent's queues "
-                f"(queued hunt groups: {sorted(waiting)}, agent queues: "
-                f"{[hg['id'] for hg in huntgroups]})"
+                f"(queued i_c_queue: {sorted(waiting)}, agent queues: "
+                f"{[Serializer.call_queue_key(hg) for hg in huntgroups]})"
             )
 
         return [
             Serializer.get_call_queue(
                 huntgroup,
                 agent_account_id,
-                None if waiting is None else waiting.get(huntgroup["id"], 0),
+                None if waiting is None else waiting.get(Serializer.call_queue_key(huntgroup), 0),
             )
             for huntgroup in huntgroups
         ]

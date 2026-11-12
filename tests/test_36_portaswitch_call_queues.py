@@ -71,7 +71,17 @@ def member(account_id, hunt_active="Y", ext_type="Account", name=None):
     }
 
 
-def huntgroup(hg_id, members, i_c_queue=364, name=None):
+def queue_of(hg_id):
+    return 2000 + int(hg_id) if hg_id.isdigit() else 2000
+
+
+def queued(hg_id, callee=None):
+    """A caller waiting in hg_id's queue; the callee is the dialled party, not the queue."""
+    return {"state": "queued", "queue_info": {"i_c_queue": queue_of(hg_id), "position": 0, "operators": 1},
+            "callee": callee if callee is not None else {"huntgroup_id": hg_id}}
+
+
+def huntgroup(hg_id, members, i_c_queue="auto", name=None):
     hg = {
         "i_c_group": 1000 + int(hg_id) if hg_id.isdigit() else 1000,
         "id": hg_id,
@@ -79,6 +89,9 @@ def huntgroup(hg_id, members, i_c_queue=364, name=None):
         "activity_monitoring": "N",
         "assigned_extensions": members,
     }
+    if i_c_queue == "auto":
+        # A distinct queue per hunt group, so counters cannot match the wrong one.
+        i_c_queue = queue_of(hg_id)
     if i_c_queue is not None:
         hg["assigned_callqueue"] = {"i_c_queue": i_c_queue, "incoming_capacity": 10}
     return hg
@@ -132,27 +145,26 @@ class TestMembership:
 
 
 class TestCountCallersWaiting:
-    def test_counts_queued_calls_per_huntgroup(self):
-        calls = [
-            {"state": "queued", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
-            {"state": "queued", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
-            {"state": "queued", "queue_info": {"i_c_queue": 2}, "callee": {"huntgroup_id": "350"}},
-        ]
-        assert Serializer.count_callers_waiting(calls) == {"340": 2, "350": 1}
+    def test_counts_queued_calls_per_queue(self):
+        calls = [queued("340"), queued("340"), queued("350")]
+        assert Serializer.count_callers_waiting(calls) == {"2340": 2, "2350": 1}
+
+    def test_call_queued_via_auto_attendant_is_counted(self):
+        # WT-2293: the callee is the auto attendant, which belongs to no hunt group.
+        calls = [queued("340", callee={"id": "555002", "account_id": "555002", "centrex_id": "48403"})]
+        assert Serializer.count_callers_waiting(calls) == {"2340": 1}
 
     def test_connected_calls_are_not_waiting(self):
-        calls = [
-            {"state": "connected", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
-            {"state": "ringing", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
-        ]
+        calls = [dict(queued("340"), state="connected"), dict(queued("340"), state="ringing")]
         assert Serializer.count_callers_waiting(calls) == {}
 
     def test_queued_call_without_queue_info_is_ignored(self):
         calls = [{"state": "queued", "callee": {"huntgroup_id": "340"}}]
         assert Serializer.count_callers_waiting(calls) == {}
 
-    def test_call_without_huntgroup_is_ignored(self):
-        calls = [{"state": "queued", "queue_info": {"i_c_queue": 1}, "callee": {}}]
+    def test_queued_call_with_zero_queue_is_ignored(self):
+        # PortaBilling sends a missing i_c_queue as 0.
+        calls = [{"state": "queued", "queue_info": {"i_c_queue": 0}, "callee": {"huntgroup_id": "340"}}]
         assert Serializer.count_callers_waiting(calls) == {}
 
     def test_empty_input(self):
@@ -323,8 +335,8 @@ class TestRetrieveCallQueues:
     @pytest.mark.asyncio
     async def test_counters_reported_when_enabled(self):
         calls = [
-            {"state": "queued", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
-            {"state": "queued", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
+            queued("340"),
+            queued("340", callee={"id": "555002", "account_id": "555002"}),
         ]
         adapter = make_adapter(mixed_huntgroups(), calls=calls)
         result = await adapter.retrieve_call_queues(SESSION, USER)
@@ -337,8 +349,7 @@ class TestRetrieveCallQueues:
     @pytest.mark.asyncio
     async def test_subscription_is_created_on_demand(self):
         adapter = make_adapter(mixed_huntgroups(), subscribed=False,
-                               calls=[{"state": "queued", "queue_info": {"i_c_queue": 1},
-                                       "callee": {"huntgroup_id": "340"}}])
+                               calls=[queued("340")])
         result = await adapter.retrieve_call_queues(SESSION, USER)
 
         assert adapter._admin_api.enable_calls == [I_CUSTOMER]
@@ -350,8 +361,7 @@ class TestRetrieveCallQueues:
     @pytest.mark.asyncio
     async def test_counters_are_trusted_once_the_subscription_exists(self):
         adapter = make_adapter(mixed_huntgroups(), subscribed=False,
-                               calls=[{"state": "queued", "queue_info": {"i_c_queue": 1},
-                                       "callee": {"huntgroup_id": "340"}}])
+                               calls=[queued("340")])
         await adapter.retrieve_call_queues(SESSION, USER)
         # Stand in for the TTL expiring between two polls.
         adapter._call_queue_counters_cache.clear()
@@ -457,7 +467,7 @@ class TestCountersCache:
     @pytest.mark.asyncio
     async def test_customers_do_not_share_counters(self):
         adapter = make_adapter(mixed_huntgroups(), calls=[
-            {"state": "queued", "queue_info": {"i_c_queue": 1}, "callee": {"huntgroup_id": "340"}},
+            queued("340"),
         ])
         await adapter.retrieve_call_queues(SESSION, USER)
 
