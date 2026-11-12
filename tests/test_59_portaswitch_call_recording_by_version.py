@@ -76,7 +76,9 @@ class AccountAPI:
     async def get_xdr_list(self, **kwargs):
         self.calls.append(kwargs)
         if not kwargs.get("call_recording"):
-            return {"xdr_list": self.xdr_list, "total": len(self.xdr_list)}
+            offset = kwargs.get("offset") or 0
+            rows = self.xdr_list[offset:offset + kwargs["limit"]] if kwargs.get("limit") else self.xdr_list
+            return {"xdr_list": rows, "total": len(self.xdr_list)}
         if self.recorded_error:
             raise self.recorded_error
         lo = kwargs["time_from"].strftime("%Y-%m-%d %H:%M:%S")
@@ -167,7 +169,7 @@ async def test_a_later_page_gets_its_own_recordings_not_the_newest_ones():
     of the range, and a later page would lose its recordings."""
     newer_page = [_cdr(i_xdr=100 + i, bill_time=f"2025-09-07 17:00:{i:02d}") for i in range(3)]
     this_page = [_cdr(i_xdr=10 + i, bill_time=f"2025-09-07 16:00:{i:02d}") for i in range(3)]
-    account = AccountAPI(this_page, recorded=newer_page + this_page)
+    account = AccountAPI(newer_page + this_page, recorded=newer_page + this_page)
     adapter = make_adapter(AdminAPI("MR130-2"), account)
 
     items, _ = await adapter.retrieve_calls(
@@ -175,6 +177,7 @@ async def test_a_later_page_gets_its_own_recordings_not_the_newest_ones():
         page=2, items_per_page=3,
     )
 
+    assert len(items) == 3
     assert all(item.recording_id is not None for item in items)
 
 

@@ -326,6 +326,31 @@ async def test_get_xdr_list_pins_the_payload_sent_to_the_switch():
 
 
 @pytest.mark.asyncio
+async def test_get_xdr_list_sends_a_raw_offset_and_limit_when_given():
+    """retrieve_calls reads the page with a margin on each side (WT-2281)."""
+    api = object.__new__(AccountAPI)
+    sent = {}
+
+    async def fake_send_request(**kwargs):
+        sent.update(kwargs)
+        return {"xdr_list": [], "total": 0}
+
+    api._AccountAPI__send_request = fake_send_request
+
+    await api.get_xdr_list(
+        access_token="token",
+        page=3,
+        items_per_page=40,
+        time_from=datetime(2026, 9, 5, 6, 8, 39),
+        time_to=datetime(2026, 9, 6, 6, 8, 39),
+        offset=70,
+        limit=60,
+    )
+
+    assert (sent["params"]["offset"], sent["params"]["limit"]) == (70, 60)
+
+
+@pytest.mark.asyncio
 async def test_get_xdr_list_asks_for_recorded_calls_only_when_told_to():
     """call_recording=1 is the database filter recordings are found by (WT-2283);
     with_cr_download_ids is never sent, it lists the recording storage over SFTP."""
