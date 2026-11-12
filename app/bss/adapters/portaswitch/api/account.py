@@ -212,6 +212,7 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
     async def get_xdr_list(
             self, access_token: str, page: int, items_per_page: int, time_from: datetime, time_to: datetime,
             call_recording: bool = False, get_total: bool = True,
+            *, offset: Optional[int] = None, limit: Optional[int] = None,
     ) -> dict:
         """Returns the account_info of the account, which created a session related to
         the access_token.
@@ -227,6 +228,8 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
                 unlike with_cr_download_ids, which lists the recording storage over SFTP
                 for every recorded call and is never sent (WT-2283).
             :get_total (bool): Ask for the total count of the filtered records.
+            :offset (int, optional): Raw offset override. Overrides page-based offset when provided.
+            :limit (int, optional): Raw limit override. Overrides items_per_page when provided.
 
         Returns:
             :(dict): The API method execution result that contains an account info.
@@ -236,8 +239,8 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
             "i_service_type": 3,
             "get_total": 1 if get_total else 0,
             "show_unsuccessful": 1,
-            "limit": items_per_page,
-            "offset": items_per_page * (page - 1),
+            "limit": limit if limit is not None else items_per_page,
+            "offset": offset if offset is not None else items_per_page * (page - 1),
             "from_date": time_from.strftime("%Y-%m-%d %H:%M:%S"),
             "to_date": time_to.strftime("%Y-%m-%d %H:%M:%S"),
         }

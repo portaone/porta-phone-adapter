@@ -182,6 +182,11 @@ BRANCH_OFFICE_TYPE: Final[int] = 2
 #: former ThreadPoolExecutor(max_workers=10) pools). WT-1720.
 FANOUT_LIMIT: Final[int] = 10
 
+#: int: Rows of call history read past each edge of the requested page, so that the
+#: voicemail leg of a call is matched with its incoming leg on the neighbouring page
+#: (WT-2281). The list is ordered by bill_time and the two legs are seconds apart.
+CALL_HISTORY_PAIR_MARGIN: Final[int] = 10
+
 #: datetime: Lower bound of the call history before WT-1932 gave it a default window.
 #: It survives as the floor the window is clamped to, so a client-supplied `time_to`
 #: near the edge of the datetime type cannot make the subtraction overflow, and as
@@ -2055,21 +2060,32 @@ class PortaSwitchAdapter(BSSAdapter):
                 return [], 0
 
             access_token = safely_extract_scalar_value(session.access_token)
+            # The page plus CALL_HISTORY_PAIR_MARGIN rows on each side, which only serve
+            # to find the incoming leg of a voicemail leg on the page (WT-2281).
+            offset = items_per_page * (page - 1)
+            before = min(CALL_HISTORY_PAIR_MARGIN, offset)
             result: dict = await self._account_api.get_xdr_list(
                 access_token=access_token,
                 page=page,
                 items_per_page=items_per_page,
                 time_from=time_from,
                 time_to=time_to,
+                offset=offset - before,
+                limit=before + items_per_page + CALL_HISTORY_PAIR_MARGIN,
             )
+            window = result["xdr_list"]
+            xdr_list = window[before:before + items_per_page]
 
             recorded_xdrs = (
-                await self._recorded_xdrs(access_token, result["xdr_list"])
+                await self._recorded_xdrs(access_token, xdr_list)
                 if await self._recordings_by_registry()
                 else None
             )
+            # total stays the switch's count: lowering it by the rows hidden on this page
+            # would leave the last page out of a client's page count.
             return [
-                Serializer.get_cdr_info(cdr, recorded_xdrs=recorded_xdrs) for cdr in result["xdr_list"]
+                Serializer.get_cdr_info(cdr, recorded_xdrs=recorded_xdrs)
+                for cdr in Serializer.drop_own_number_forwards(xdr_list, window)
             ], result["total"]
 
         except WebTritErrorException as error:

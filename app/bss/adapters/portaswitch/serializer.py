@@ -521,6 +521,47 @@ class Serializer:
             return Direction.unknown
 
     @staticmethod
+    def _cld_number(cdr: dict) -> str:
+        """The number of an xDR's CLD, without the "(name)" PortaBilling appends to an extension."""
+        return str(cdr.get("CLD") or "").split(" (", 1)[0].strip()
+
+    @staticmethod
+    def drop_own_number_forwards(xdr_list: list[dict], window: Optional[list[dict]] = None) -> list[dict]:
+        """Drops the voicemail leg of a call the user did not answer (WT-2281).
+
+        A call voicemail picks up leaves two xDRs on the callee's account with one call_id:
+        the incoming leg that rang (missed or declined) and a forwarded one (bit_flags 12,
+        accepted) to the callee's own number - its voicemail or IVR application. Only the
+        incoming one is what happened to the user. The forwarded leg is recognised by its
+        CLD being the incoming leg's CLD: a real forward (follow-me, transfer, an Auto
+        Attendant redirect) carries the target's number. Neither `destination` nor
+        `description` can tell: both are the operator's tariff, and `destination` is not
+        returned at all before MR128 (BA-41943).
+
+        The incoming leg is looked for in `window` - the page and the rows around it - so a
+        pair split by a page edge still matches; only rows of `xdr_list` are dropped. Rows
+        without a CLD never match. A forwarded leg whose incoming one is not found is kept,
+        since it may be the only record of the call.
+        """
+        incoming = {
+            (cdr.get("i_account"), cdr.get("call_id"), Serializer._cld_number(cdr))
+            for cdr in (xdr_list if window is None else window)
+            if cdr.get("call_id") and Serializer._cld_number(cdr) and int(cdr.get("bit_flags") or 0) & 12 == 8
+        }
+        if not incoming:
+            return xdr_list
+
+        return [
+            cdr
+            for cdr in xdr_list
+            if not (
+                cdr.get("call_id")
+                and int(cdr.get("bit_flags") or 0) & 12 == 12
+                and (cdr.get("i_account"), cdr.get("call_id"), Serializer._cld_number(cdr)) in incoming
+            )
+        ]
+
+    @staticmethod
     def parse_call_status(cdr) -> ConnectStatus:
         """
         Determines call status based on CDR data.

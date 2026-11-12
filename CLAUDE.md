@@ -221,6 +221,21 @@ there is no second request and bit 64 is read; do not read it on MR129+, it is s
 there. An unreadable version takes the second request: below MR129 `call_recording=1`
 filters by that same bit, so it is correct everywhere.
 
+### A call voicemail took is one history item (WT-2281)
+
+PortaSwitch writes two xDRs on the callee's account for it, with one `call_id`: the
+incoming leg that rang (missed/declined) and a forwarded leg (`bit_flags & 12 == 12`,
+accepted) to the callee's own number, rated as `UMRECORD|<own number>`.
+`Serializer.drop_own_number_forwards` drops the forwarded leg when the page or its margin
+holds an incoming leg with the same `i_account`, `call_id` and `CLD` number - a real forward
+(follow-me, transfer, Auto Attendant redirect) carries the target's `CLD`. Do not key it
+on `destination`: it is the tariff's prefix (`UM` on one switch, `UMRECORD` on another)
+and is not returned at all before MR128 (BA-41943). The list is ordered by `bill_time`,
+so `retrieve_calls` reads `CALL_HISTORY_PAIR_MARGIN` rows past each edge of the page to
+match a pair a page edge splits; those rows are never returned. A pair split by the
+`time_from`/`time_to` edge stays unmatched. `total` stays the switch's count, so a page
+can come back short; lowering it would drop the last page from a client's count.
+
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 
 PortaBilling exposes exactly five mailbox calls (`api/account.py`):
