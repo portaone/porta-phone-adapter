@@ -199,28 +199,26 @@ BILLING_MODEL_BENEFICIARY: Final[int] = 4
 
 
 #: A sign-in identifier that may be an email; anything else is never looked up by email.
-#: `%` is refused: the lookup is an unauthenticated LIKE search across every customer,
-#: and `%@%` would list them all. `_` stays, real addresses carry it.
+#: `%` is refused: PortaBilling turns an email filter holding one into an unauthenticated
+#: LIKE search across every customer, and `%@%` would list them all. `_` stays: it is
+#: literal in the exact match, and real addresses carry it.
 _EMAIL_RE: Final = re.compile(r"^[^@\s,%]+@[^@\s,%]+\.[^@\s,%]+$")
 
 
-#: Candidate rows read per Account/get_account_list page by the email lookup, and the
+#: Rows read per Account/get_account_list page by the email lookup, and the
 #: most it reads for one address before refusing rather than picking from a partial list.
 EMAIL_LOOKUP_PAGE: Final[int] = 1000
 EMAIL_LOOKUP_MAX_ROWS: Final[int] = 10000
 
 
 def _has_email(account_row: dict, email: str) -> bool:
-    r"""Tell whether the row's email field holds `email`, compared without case.
+    """Tell whether the row's email field is `email`, compared without case.
 
-    The field may list several addresses separated by commas, and an entry may be in
-    the `Name <address>` form. The rule is PortaBilling's own for its password-reset
-    lookup (`$_EMAIL_REGEXP_FMT` in Porta/PasswordsRole.pm): `(^|,)\s*ADDR\s*(,|$)` or
-    `<\s*ADDR\s*>`.
+    The search already matches the whole field; this keeps a row that does not from
+    being picked if the switch ever answers with one. A field listing several
+    addresses, or one in the `Name <address>` form, is not the address (WT-2279).
     """
-    address = re.escape(email)
-    pattern = rf"(?:^|,)\s*{address}\s*(?:,|$)|<\s*{address}\s*>"
-    return re.search(pattern, account_row.get("email") or "", re.IGNORECASE) is not None
+    return (account_row.get("email") or "").strip().casefold() == email.casefold()
 
 
 def _is_beneficiary(account_info: dict) -> bool:
@@ -294,7 +292,7 @@ class PortaSwitchAdapter(BSSAdapter):
     capabilities required by WebTrit clients.
     """
 
-    VERSION: Final[str] = "1.5.4"
+    VERSION: Final[str] = "1.5.5"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
     # Served in /system-info; the apps pick the sign-in field's wording and keyboard from
     # it. An email is accepted too, looked up when no account has it as its id (WT-2212).
@@ -678,13 +676,13 @@ class PortaSwitchAdapter(BSSAdapter):
 
         An id match always wins, so this runs only after that lookup found nothing: in
         PortaBilling an account id can itself be an address. Exactly one open account
-        must carry the email. With none the caller answers 404; with several no account
-        is picked and the sign-in is refused, so no code is sent to anyone.
+        must have the email as its whole email field (WT-2279). With none the caller
+        answers 404; with several no account is picked and the sign-in is refused, so no
+        code is sent to anyone.
 
-        The email filter is a LIKE pattern, so its rows are candidates only, and a common
-        address can have more of them than one page holds. The pages are read until they
-        run out, stopping at a second exact match; past EMAIL_LOOKUP_MAX_ROWS the
-        sign-in is refused instead of picking an account from a partial list.
+        The pages are read until they run out, stopping at a second match; past
+        EMAIL_LOOKUP_MAX_ROWS the sign-in is refused instead of picking an account from
+        a partial list.
 
         get_account_list leaves out assigned_addons, so the match is read again with
         get_account_info: the alias resolution and the add-on gate need the full row.
@@ -695,7 +693,7 @@ class PortaSwitchAdapter(BSSAdapter):
 
         Raises:
             WebTritErrorException: 422 ambiguous_user_ref when several accounts match,
-                or when there are too many candidates to tell.
+                or when there are too many rows to tell.
         """
         email = user_ref.strip()
         if not _EMAIL_RE.match(email):
@@ -712,11 +710,10 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise ambiguous_user_error()
 
             offset += len(rows)
-            total = resp.get("total")
-            if len(rows) < EMAIL_LOOKUP_PAGE or (total is not None and offset >= int(total)):
+            if len(rows) < EMAIL_LOOKUP_PAGE:
                 break
             if offset >= EMAIL_LOOKUP_MAX_ROWS:
-                logging.warning(f"OTP sign-in by email refused: more than {offset} candidate accounts")
+                logging.warning(f"OTP sign-in by email refused: {offset} or more accounts listed")
                 raise ambiguous_user_error()
 
         if not matches:

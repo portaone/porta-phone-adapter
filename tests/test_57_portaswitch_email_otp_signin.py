@@ -2,9 +2,8 @@
 
 An identifier that no account has as its id and that looks
 like an address is looked up in the accounts' email field. Exactly one open account
-must carry it; with none or several no code is sent. PortaBilling's email filter is a
-LIKE pattern, so the candidate rows are compared exactly, case-insensitively, against
-each entry of a comma-separated email field.
+must have it as its whole email field, compared without case (WT-2279); with none or
+several no code is sent.
 """
 
 import os
@@ -56,13 +55,16 @@ class FakeAdminAPI:
 
     async def find_accounts_by_email(self, email, limit, offset):
         self.email_searches.append((email, offset))
-        needle = email.lower()
+        # An exact, case-insensitive match, as PortaBilling's `=` under a _ci collation.
+        # A "listed" account is answered whatever its field holds, so the adapter's own
+        # check and the paging can be exercised.
         rows = [
-            {k: v for k, v in a.items() if k != "assigned_addons"}
+            {k: v for k, v in a.items() if k not in ("assigned_addons", "listed")}
             for a in self._accounts.values()
-            if needle in (a["email"] or "").lower()
+            if a.get("listed") or (a["email"] or "").lower() == email.lower()
         ]
-        return {"account_list": rows[offset : offset + limit], "total": len(rows)}
+        # No total: the adapter asks for none (WT-2279).
+        return {"account_list": rows[offset : offset + limit]}
 
     async def create_otp(self, i_account, delivery_channel):
         self.created_otps.append(i_account)
@@ -115,21 +117,28 @@ class TestEmailSignIn:
         assert subject._admin_api.created_otps == [101]
 
     @pytest.mark.asyncio
-    async def test_any_entry_of_a_multi_address_field_matches(self):
-        subject = adapter([account(101, f"billing@ifonica.example, {EMAIL}")])
-
-        await request_otp(subject)
-
-        assert subject._admin_api.created_otps == [101]
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("field", [f"John Doe <{EMAIL}>", f"billing@ifonica.example, John < {EMAIL} >"])
-    async def test_a_name_and_address_entry_matches(self, field):
+    @pytest.mark.parametrize(
+        "field", [f"billing@ifonica.example, {EMAIL}", f"John Doe <{EMAIL}>", f"billing@ifonica.example, John < {EMAIL} >"]
+    )
+    async def test_a_field_holding_more_than_the_address_does_not_match(self, field):
+        # Only the whole field is compared (WT-2279).
         subject = adapter([account(101, field)])
 
-        await request_otp(subject)
+        with pytest.raises(WebTritErrorException) as error:
+            await request_otp(subject)
 
-        assert subject._admin_api.created_otps == [101]
+        assert error.value.status_code == 404
+        assert subject._admin_api.created_otps == []
+
+    @pytest.mark.asyncio
+    async def test_a_listed_row_that_is_not_the_address_is_not_picked(self):
+        subject = adapter([dict(account(101, f"John Doe <{EMAIL}>"), listed=True)])
+
+        with pytest.raises(WebTritErrorException) as error:
+            await request_otp(subject)
+
+        assert error.value.status_code == 404
+        assert subject._admin_api.created_otps == []
 
     @pytest.mark.asyncio
     async def test_the_addon_gate_reads_the_full_account_row(self):
@@ -174,13 +183,13 @@ class TestNoCodeIsSent:
         assert subject._admin_api.created_otps == []
 
     @pytest.mark.asyncio
-    async def test_like_wildcards_and_longer_addresses_do_not_count(self):
-        # "_" is a LIKE wildcard and "%x%" a substring match: no row has the address.
+    async def test_similar_or_longer_addresses_do_not_count(self):
+        # Answered by the switch, yet none is the address: "_" is no wildcard here.
         subject = adapter(
             [
-                account(101, "johnxdoe@ifonica.example"),
-                account(102, f"a{EMAIL}.ua"),
-                account(103, f"John <a{EMAIL}>"),
+                dict(account(101, "johnxdoe@ifonica.example"), listed=True),
+                dict(account(102, f"a{EMAIL}.ua"), listed=True),
+                dict(account(103, f"John <a{EMAIL}>"), listed=True),
             ]
         )
 
@@ -226,17 +235,27 @@ class TestIdLookupComesFirst:
 
 
 class TestCandidatePages:
-    """A substring search can return more candidates than one page holds."""
+    """The search can answer with more rows than one page holds."""
 
     @staticmethod
     def candidates(count):
-        # Longer addresses that contain EMAIL: every one is a candidate, none a match.
-        return [account(200 + n, f"x{n}{EMAIL}") for n in range(count)]
+        # Rows the switch answers with that are not the address: none is a match.
+        return [dict(account(200 + n, f"x{n}{EMAIL}"), listed=True) for n in range(count)]
 
     @pytest.mark.asyncio
     async def test_a_match_past_the_first_page_is_found(self, monkeypatch):
         monkeypatch.setattr(adapter_module, "EMAIL_LOOKUP_PAGE", 2)
-        subject = adapter(self.candidates(5) + [account(101, EMAIL)])
+        subject = adapter(self.candidates(4) + [account(101, EMAIL)])
+
+        await request_otp(subject)
+
+        assert subject._admin_api.created_otps == [101]
+        assert [offset for _, offset in subject._admin_api.email_searches] == [0, 2, 4]
+
+    @pytest.mark.asyncio
+    async def test_a_full_last_page_is_followed_by_an_empty_one(self, monkeypatch):
+        monkeypatch.setattr(adapter_module, "EMAIL_LOOKUP_PAGE", 2)
+        subject = adapter(self.candidates(3) + [account(101, EMAIL)])
 
         await request_otp(subject)
 
@@ -275,6 +294,26 @@ class TestCandidatePages:
 
         assert error.value.code == "ambiguous_user_ref"
         assert subject._admin_api.created_otps == []
+
+
+@pytest.mark.asyncio
+async def test_the_search_is_exact_and_asks_for_no_total():
+    # Counting is a second scan of every account, and a wildcard rules out an index (WT-2279).
+    from bss.adapters.portaswitch.api.admin import AdminAPI
+
+    sent = []
+
+    async def send_request(**request):
+        sent.append(request)
+        return {"account_list": []}
+
+    api = object.__new__(AdminAPI)
+    api._send_request = send_request
+
+    await api.find_accounts_by_email(EMAIL, limit=1000, offset=0)
+
+    assert sent[0]["params"]["get_total"] == 0
+    assert sent[0]["params"]["email"] == EMAIL
 
 
 def test_the_apps_are_told_an_email_is_accepted():
