@@ -236,6 +236,14 @@ match a pair a page edge splits; those rows are never returned. A pair split by 
 `time_from`/`time_to` edge stays unmatched. `total` stays the switch's count, so a page
 can come back short; lowering it would drop the last page from a client's count.
 
+### Callers waiting are keyed by `i_c_queue`, not `huntgroup_id`
+
+`count_callers_waiting` keys a `queued` call of `CallControl/get_sip_calls_list` by
+`queue_info.i_c_queue` and `_build_queues` matches it to `assigned_callqueue.i_c_queue`.
+`callee.huntgroup_id` marks the callee's hunt group *membership*, not routing
+(`Porta/SIP/CallControl.pm`), so a caller queued via an auto attendant has none and was
+never counted (WT-2293).
+
 ### Voicemail is an IMAP mailbox, and that shapes the whole feature
 
 PortaBilling exposes exactly five mailbox calls (`api/account.py`):
