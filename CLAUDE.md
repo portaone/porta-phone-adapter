@@ -292,6 +292,28 @@ id. Do not replace the check with a tolerant `.get("from")` - `sender`/`receiver
 required by `VoicemailMessageDetails`, so that only moves the failure into pydantic
 and, worse, hides the wrong-message answer.
 
+### NetSapiens adapter (WT-2299)
+
+Checked against the NetSapiens developer sandbox (v45). Things that are easy to break:
+
+- **Tokens are keyed by `user_id`.** `NetsapiensAPI.user_id` overrides the base
+  `str(user)`, which includes the password and the client: a token stored at sign-in was
+  never found again by the calls that pass only `user_id`.
+- **The password sign-in needs the domain's OAuth client.** `authenticate` refuses
+  without `client_id` / `client_secret`, because nothing would check the password; the
+  delegated token (`login_delegated`, domain API key) must never stand in for it there.
+  Everything after sign-in (SSO, a token lost on restart) uses the delegated token.
+- **The device name decides incoming calls.** NetSapiens' `<OwnDevices>` rings only
+  `<user>`, `<user>` + one letter or its own suffixes (`wp`); a `…wt` device registers but
+  never rings. Hence a one-letter `device_filter`.
+- **CDR direction is relative to the user.** `call-direction` is not "incoming for this
+  user": the same call has 1 or 2 depending on its outcome. Direction comes from comparing
+  `call-orig-user` with the user's extension; the user fields arrive as numbers.
+- **Numbers lists are never null.** Core maps over `numbers.sms` / `additional`; `null`
+  fails the sign-in.
+- **Voicemail sender** is `voicemail-from-user` in the live API, not the `FromUser` the
+  API reference shows.
+
 ## Documentation rules
 
 When adding a config option, a route, a capability or any user-facing behaviour:
