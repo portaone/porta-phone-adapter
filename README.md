@@ -234,6 +234,75 @@ We run no FreePBX ourselves, so to develop or check the adapter, set up a lab:
    curl -s localhost:8080/api/v2/user/contacts -H 'Authorization: Bearer <access_token>'
    ```
 
+## NetSapiens adapter settings
+
+The NetSapiens adapter (`BSS_ADAPTER_MODULE=bss.adapters.netsapiens`,
+`BSS_ADAPTER_CLASS=NetsapiensAdapter`) talks to the NetSapiens API v2 of each domain
+with that domain's API key. Users are `<extension>@<domain>`.
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `NETSAPIENS_CLIENTS` | yes¹ | — | JSON list, one entry per domain: `domain`, `api_server` (e.g. `https://ns-api.com`), `api_key`, `device_filter`, `default_sip_outbound_proxy`, `default_sip_port`; `client_id` / `client_secret` only for the password sign-in |
+| `NETSAPIENS_CLIENTS_FIRESTORE` | yes¹ | — | Firestore collection holding the same entries, instead of `NETSAPIENS_CLIENTS` |
+| `NETSAPIENS_TOKEN_STORAGE` | no | `firestore` | Where the per-user NetSapiens tokens are kept: `firestore`, or `memory` (one replica, or a lab without Google Cloud; a lost token is minted again from the API key) |
+| `NETSAPIENS_SSO_SECRET` | no | — | Shared HS256 key of the customer's SaaS. When set, users sign in with a token the SaaS signs (`autoProvision`) |
+| `NETSAPIENS_SSO_ISSUER` | no | — | Expected `iss` of the SaaS tokens; not checked when empty |
+| `NETSAPIENS_SSO_AUDIENCE` | no | `portadialer` | Expected `aud` of the SaaS tokens |
+| `NETSAPIENS_SSO_SIGNUP` | no | `false` | `true` also advertises `signup`: the mobile app's embedded sign-in page posts the token as `sso_token`. The web dialer shows a sign-up tab for this capability, so keep it off for web-only setups |
+| `NETSAPIENS_TAB_TOKEN_SECRET` | no | the SSO secret | HS256 key of the tokens for the customer's pages shown as app tabs (`external-page-access-token`, `customMethods`) |
+| `NETSAPIENS_TAB_TOKEN_ISSUER` | no | `portadialer` | `iss` of the tab tokens |
+| `NETSAPIENS_TAB_TOKEN_AUDIENCE` | no | the SSO issuer | `aud` of the tab tokens |
+| `NETSAPIENS_TAB_TOKEN_TTL` | no | `600` | Lifetime of a tab token, seconds; the app asks for a new one when it expires |
+
+¹ One of the two.
+
+**Sign-in.** With `client_id` / `client_secret` (an OAuth client of the domain) users can
+sign in with their NetSapiens password. Without them the password sign-in is refused,
+since NetSapiens cannot check the password. The usual set-up is a token from the
+customer's SaaS: a JWT (HS256) with `sub` = `<extension>@<domain>`, a short `exp` and a
+unique `jti`; each `jti` is accepted once. It comes as `config_token` of
+`/session/auto-provision` (deeplink, QR code, web dialer widget) or as `sso_token` of
+the sign-up request (embedded sign-in page of the mobile app). After that the adapter
+acts for the user with a delegated token (`POST /ns-api/v2/jwt`, with the domain API key),
+so the user's NetSapiens password is never needed.
+
+**API key.** One per domain. Office Manager scope limited to the domain is enough, with
+the models `device, subscriber, contact, cdr, cdr2, voicemail, audio, recording,
+phonenumber, oauth`. Write access is used only for voicemail (mark heard, delete). Limit
+the key to the adapter's addresses.
+
+**Device.** The app registers as the user's device whose name ends with `device_filter`.
+NetSapiens rings a user's devices only when the device is named `<extension>`,
+`<extension>` plus one letter (`1001a`) or one of its own suffixes (`1001wp`): a device
+named `1001wt` registers but never gets an incoming call. Use a one-letter
+`device_filter` such as `a`.
+
+**Numbers.** The user's main number is the first DID routed to the user in
+`/phonenumbers` (E.164), else the extension; Core finds users by it, for example for
+`/user/notifications`. A DID routed "to user" without the domain as its host goes
+straight to voicemail on NetSapiens.
+
+**Voicemail** stays on NetSapiens: the `new` folder is unheard, `save` is heard; marking a
+message heard moves it to `save` and cannot be undone; deleting moves it to NetSapiens'
+trash. **Call recordings** are looked up by call ID for the answered calls of a history
+page. NetSapiens stores them as GSM 6.10 WAV, which browsers cannot play; when `ffmpeg` is
+installed in the image the adapter re-encodes them to PCM WAV. A recording is not
+available for a minute or two after the call. Forwarding a voicemail to a colleague makes
+Core keep an mp3 copy; NetSapiens serves only WAV, so forwarding also needs `ffmpeg`
+(without it the adapter refuses mp3 and the forward fails).
+
+**Capabilities.** Besides the PBX-backed ones (history, contacts, voicemail, recordings)
+the adapter advertises the features Core provides on its own: chat
+(`internalMessaging`), notifications and their push (`notifications`,
+`notificationsPush`, without which Core sends no push for a notification posted by a
+third party), presence between the apps (`directPresence`), conference, conversation
+mute, session auto-termination and voicemail trash/forward. Core also subscribes to the
+PBX over SIP for line state (`sipDialogs`, BLF) and for the voicemail indicator
+(`sipMwi`); NetSapiens answers both. `sipPresence` is not offered: NetSapiens refuses a
+presence PUBLISH (403). Each one can be switched off with the usual
+`CAPABILITIES_<NAME>=false` (e.g. `CAPABILITIES_SIP_DIALOGS`). The sign-in capabilities
+follow the settings above. Not supported: OTP sign-in, SMS, call center, transcription.
+
 ## Outbound connection pool (PortaSwitch)
 
 Every PortaSwitch call goes through one process-wide `httpx.AsyncClient` per TLS-verify
