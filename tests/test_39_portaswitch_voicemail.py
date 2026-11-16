@@ -396,11 +396,15 @@ class FakeMailboxAPI:
     def __init__(self, details=None, attachment=None):
         self._details = details
         self._attachment = attachment
+        self.attachment_calls = []
+        self.details_calls = 0
 
     async def get_mailbox_message_details(self, access_token, message_id):
+        self.details_calls += 1
         return self._details
 
-    async def get_mailbox_message_attachment(self, access_token, message_id, file_format):
+    async def get_mailbox_message_attachment(self, access_token, message_id, file_format, file_name=None):
+        self.attachment_calls.append((file_format, file_name))
         return self._attachment
 
 
@@ -503,3 +507,146 @@ class TestStaleVoicemailMessageAttachment:
         assert await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "mp3") == (
             "audio/mpeg", iterator
         )
+
+
+# A fax has no `format` in PortaBilling: fetched without a `file_name` it comes back as a
+# ZIP of all its files whatever the format, and with one it comes back as that file under
+# its own MIME type (Porta/Account/Mailbox.pm, get_message_attachment). WT-2227.
+
+
+def fax_record(message_uid=578, files=(("application", "pdf", "fax.pdf"),)):
+    record = details_record(message_uid)
+    del record["voicemail_duration"]
+    record.update({
+        "subject": "Fax Message",
+        "fax_pages": 2,
+        "body_structures": [{"bodytype": "text", "bodysubtype": "plain", "bodysize": 0}]
+        + [{"bodytype": t, "bodysubtype": st, "bodysize": 18, "file_name": name} for t, st, name in files],
+    })
+    return record
+
+
+class ClosableBody:
+    """A streamed body that records whether its connection was released."""
+
+    def __init__(self):
+        self.closed = False
+
+    async def chunks(self):
+        try:
+            yield b"PK"
+        finally:
+            self.closed = True
+
+
+class TestFaxAttachment:
+    @pytest.mark.asyncio
+    async def test_a_fax_without_a_format_is_its_document(self):
+        pdf = ("application/pdf", object())
+        subject = mailbox_adapter(details=fax_record(), attachment=pdf)
+
+        assert await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, None) == pdf
+        assert subject._account_api.attachment_calls == [("wav", "fax.pdf")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_format, file_name", [
+        ("pdf", "fax.pdf"), ("PDF", "fax.pdf"), ("tiff", "fax.tiff"), ("tif", "fax.tiff"), ("png", "fax.png"),
+    ])
+    async def test_a_fax_format_picks_the_file_of_that_type(self, file_format, file_name):
+        record = fax_record(files=(
+            ("application", "pdf", "fax.pdf"), ("image", "tiff", "fax.tiff"), ("image", "png", "fax.png"),
+        ))
+        subject = mailbox_adapter(details=record, attachment=("x/y", object()))
+
+        await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, file_format)
+
+        assert subject._account_api.attachment_calls == [("wav", file_name)]
+
+    @pytest.mark.asyncio
+    async def test_a_fax_format_the_fax_does_not_have_is_refused(self):
+        subject = mailbox_adapter(details=fax_record(), attachment=("x/y", object()))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "tiff")
+
+        assert error.value.status_code == 422
+        assert error.value.code == "unsupported_file_format"
+        assert subject._account_api.attachment_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_fax_of_one_file_per_page_stays_a_zip(self):
+        # Serving page one would pass a part of the fax off as all of it.
+        record = fax_record(files=[("image", "tiff", f"test_{n}.tif") for n in (1, 2, 3)])
+        subject = mailbox_adapter(details=record, attachment=("application/zip", object()))
+
+        await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "tiff")
+
+        assert subject._account_api.attachment_calls == [("wav", None)]
+
+    @pytest.mark.asyncio
+    async def test_an_audio_format_for_a_fax_is_refused_and_the_zip_released(self):
+        body = ClosableBody()
+        subject = mailbox_adapter(attachment=("application/zip", body.chunks()))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "mp3")
+
+        assert error.value.status_code == 422
+        assert error.value.code == "unsupported_file_format"
+        assert body.closed
+        assert subject._account_api.details_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_a_voice_message_with_an_audio_format_costs_no_details_call(self):
+        subject = mailbox_adapter(attachment=("audio/mpeg", object()))
+
+        await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "mp3")
+
+        assert subject._account_api.details_calls == 0
+        assert subject._account_api.attachment_calls == [("mp3", None)]
+
+    @pytest.mark.asyncio
+    async def test_a_voice_message_without_a_format_is_wav(self):
+        subject = mailbox_adapter(details=details_record(578), attachment=("audio/wav", object()))
+
+        await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, None)
+
+        assert subject._account_api.attachment_calls == [("wav", None)]
+
+    @pytest.mark.asyncio
+    async def test_a_fax_format_for_a_voice_message_is_refused(self):
+        subject = mailbox_adapter(details=details_record(578), attachment=("audio/wav", object()))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "pdf")
+
+        assert error.value.code == "unsupported_file_format"
+        assert subject._account_api.attachment_calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_format_is_refused_before_any_call(self):
+        subject = mailbox_adapter(details=fax_record())
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "docx")
+
+        assert error.value.code == "unsupported_file_format"
+        assert subject._account_api.details_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_a_vanished_fax_is_not_found(self):
+        subject = mailbox_adapter(details=fax_record(576))
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, "pdf")
+
+        assert_message_not_found(error)
+
+    @pytest.mark.asyncio
+    async def test_a_fax_file_portabilling_cannot_match_is_not_found(self):
+        subject = mailbox_adapter(details=fax_record(), attachment={"success": 0})
+
+        with pytest.raises(WebTritErrorException) as error:
+            await subject.retrieve_voicemail_message_attachment(SESSION, LIVE_ID, None)
+
+        assert_message_not_found(error)

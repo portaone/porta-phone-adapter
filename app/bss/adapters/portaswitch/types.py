@@ -67,3 +67,15 @@ class PortaSwitchMailboxMessageAttachmentFormat(Enum):
     @classmethod
     def has_value(cls, value):
         return value in cls._value2member_map_
+
+
+# The fax formats a client may name, each mapped to the MIME types PortaBilling files a
+# fax page under (`_MIME_TYPE_FOR_FAX` in Porta/Account/Mailbox.pm). PortaBilling has no
+# fax `format` of its own - a fax document is fetched by its `file_name` (WT-2227).
+PORTASWITCH_FAX_ATTACHMENT_FORMATS = {
+    "pdf": ("application/pdf",),
+    "tiff": ("image/tiff",),
+    "tif": ("image/tiff",),
+    "png": ("image/png", "image/xpng"),
+}
+PORTASWITCH_FAX_MIME_TYPES = frozenset(m for types in PORTASWITCH_FAX_ATTACHMENT_FORMATS.values() for m in types)

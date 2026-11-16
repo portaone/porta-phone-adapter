@@ -273,6 +273,17 @@ The same mailbox is real e-mail: a flag set here is visible in the subscriber's 
 webmail and any IMAP client, which is why repurposing `Answered` to mean anything else
 would corrupt what they see.
 
+### A fax is fetched by `file_name`, never by `format` (WT-2227)
+
+`get_mailbox_message_attachment`'s `format` is audio-only. For a fax message asked
+without `file_name` PortaBilling ignores it and answers a ZIP of every fax file; with
+`file_name` it answers that one file under its own MIME type. So `pdf`/`tiff`/`png` (or
+no format) reads the details first and asks for the fax file by name, and an audio
+format answered with a ZIP is a fax: it is released and refused with
+`unsupported_file_format`. A fax filed as one file per page stays the ZIP - serving
+page one would pass a part off as the whole fax. Voice with an audio format still costs
+one call; keep the details call off that path.
+
 ### A vanished `message_uid` is not reported as missing
 
 A message deleted straight on PortaSwitch - over the IVR, from the UM webmail, from
