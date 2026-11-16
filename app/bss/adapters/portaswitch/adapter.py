@@ -38,6 +38,7 @@ from bss.types import (
     UserVoicemailsResponse,
     UserVoicemailMessagePatch,
     VoicemailMessageDetails,
+    VoicemailMessageType,
     CallQueue,
     UserCallQueuesResponse,
     UserEventGroup,
@@ -92,6 +93,8 @@ from .types import (
     PortaSwitchMailboxMessageFlag,
     PortaSwitchMailboxMessageFlagAction,
     PortaSwitchMailboxMessageAttachmentFormat,
+    PORTASWITCH_FAX_ATTACHMENT_FORMATS,
+    PORTASWITCH_FAX_MIME_TYPES,
 )
 from .otp_storage import configure_otp_storage
 from .utils import generate_otp_id, extract_fault_code, generate_hash_dictionary, encrypt_secret, decrypt_secret
@@ -2385,6 +2388,9 @@ class PortaSwitchAdapter(BSSAdapter):
         Raises:
             WebTritErrorException: If the user is not found or the session is invalid.
         """
+        return await self._read_voicemail_message_details(session, message_id)
+
+    async def _read_voicemail_message_details(self, session: SessionInfo, message_id: str) -> VoicemailMessageDetails:
         try:
             message_details = await self._account_api.get_mailbox_message_details(
                 safely_extract_scalar_value(session.access_token), message_id
@@ -2423,21 +2429,67 @@ class PortaSwitchAdapter(BSSAdapter):
         Parameters:
             session (SessionInfo): The session object for the PortaSwitch account.
             message_id (str): The unique identifier of the voicemail message.
-            file_format (str): The format in which the attachment should be retrieved (e.g., 'wav', 'mp3').
+            file_format (str): 'wav', 'mp3' or 'au' for a voice message; 'pdf', 'tiff' ('tif') or 'png'
+                for a fax. None returns a voice message as 'wav' and a fax as its own document.
 
         Returns:
             tuple[str, Iterator]: A tuple containing the content-type and an iterator over the raw bytes of the attachment.
+
+        Raises:
+            WebTritErrorException: 422 unsupported_file_format for a format the message does not have,
+                an audio format for a fax included.
         """
 
         file_format = file_format and file_format.lower()
-        if file_format and not PortaSwitchMailboxMessageAttachmentFormat.has_value(file_format):
+        is_audio_format = bool(file_format) and PortaSwitchMailboxMessageAttachmentFormat.has_value(file_format)
+        if file_format and not is_audio_format and file_format not in PORTASWITCH_FAX_ATTACHMENT_FORMATS:
             raise unsupported_file_format_error()
 
+        if is_audio_format:
+            attachment = await self._fetch_voicemail_message_attachment(session, message_id, file_format)
+            # PortaBilling ignores `format` for a fax fetched without a file name and
+            # answers with a ZIP of all its files; nothing else comes back as a ZIP.
+            if self._is_zip(attachment):
+                await self._discard(attachment)
+                raise unsupported_file_format_error()
+            return attachment
+
+        # A fax format, or none: only the details tell a fax from a voice message, and
+        # name the fax file to ask for (WT-2227).
+        details = await self._read_voicemail_message_details(session, message_id)
+        if details.type != VoicemailMessageType.FAX:
+            if file_format:
+                raise unsupported_file_format_error()
+            return await self._fetch_voicemail_message_attachment(
+                session, message_id, PortaSwitchMailboxMessageAttachmentFormat.WAV.value
+            )
+
+        fax_files = [
+            attachment for attachment in details.attachments
+            if f"{attachment.type}/{attachment.subtype}" in PORTASWITCH_FAX_MIME_TYPES
+        ]
+        if file_format:
+            wanted = PORTASWITCH_FAX_ATTACHMENT_FORMATS[file_format]
+            fax_files = [
+                attachment for attachment in fax_files if f"{attachment.type}/{attachment.subtype}" in wanted
+            ]
+            if not fax_files:
+                raise unsupported_file_format_error()
+
+        # One file is the fax document. A fax filed as one file per page has no single
+        # document to return, and the adapter cannot merge pages, so it keeps the ZIP
+        # PortaBilling builds of them all rather than serve page one as the whole fax.
+        file_name = fax_files[0].filename if len(fax_files) == 1 else None
+        return await self._fetch_voicemail_message_attachment(
+            session, message_id, PortaSwitchMailboxMessageAttachmentFormat.WAV.value, file_name
+        )
+
+    async def _fetch_voicemail_message_attachment(
+        self, session: SessionInfo, message_id: str, file_format: str, file_name: Optional[str] = None
+    ) -> tuple[str, AsyncIterator]:
         try:
             attachment = await self._account_api.get_mailbox_message_attachment(
-                safely_extract_scalar_value(session.access_token),
-                message_id,
-                file_format or PortaSwitchMailboxMessageAttachmentFormat.WAV.value,
+                safely_extract_scalar_value(session.access_token), message_id, file_format, file_name
             )
 
         except WebTritErrorException as error:
@@ -2452,7 +2504,8 @@ class PortaSwitchAdapter(BSSAdapter):
         # For a message deleted outside WebTrit PortaBilling answers this call with a JSON
         # body instead of the media file, and decode_response hands a JSON body back as a
         # dict - which the route then unpacks as a (content_type, iterator) pair and fails
-        # on (WT-1992). The message is simply not in the mailbox any more.
+        # on (WT-1992). The message is simply not in the mailbox any more. A fax file
+        # asked for by a name PortaBilling cannot match answers the same way.
         if not isinstance(attachment, tuple):
             logging.warning(
                 f"PortaSwitch returned no attachment for the voicemail message {message_id} "
@@ -2463,6 +2516,11 @@ class PortaSwitchAdapter(BSSAdapter):
             raise not_found_voicemail_message_error(message_id)
 
         return attachment
+
+    @staticmethod
+    def _is_zip(attachment: tuple) -> bool:
+        content_type = attachment[0] or ""
+        return content_type.split(";")[0].strip().lower() == "application/zip"
 
     async def patch_voicemail_message(
             self, session: SessionInfo, message_id: str, body: UserVoicemailMessagePatch

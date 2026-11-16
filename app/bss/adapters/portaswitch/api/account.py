@@ -436,23 +436,30 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
             access_token=access_token,
         )
 
-    async def get_mailbox_message_attachment(self, access_token: str, message_id: str, file_format: str) -> tuple[
-        str, AsyncIterator[bytes]]:
+    async def get_mailbox_message_attachment(
+        self, access_token: str, message_id: str, file_format: str, file_name: Optional[str] = None
+    ) -> tuple[str, AsyncIterator[bytes]]:
         """
         Returns the mailbox message attachment of the account, which created a session related to the access_token.
             Parameters:
                 access_token :str: The token that enables the API user to be authenticated in the PortaBilling API using the account realm.
                 message_id :str: The unique ID of the message.
-                file_format :str: Provided file format.
+                file_format :str: Provided audio file format; the API schema holds it to an audio enum even when file_name is given.
+                file_name :Optional[str]: The one attachment of the message to return, under its own MIME type.
+                    Without it a fax comes back as a ZIP of all its files, whatever the format.
 
             Returns:
                 Response :bytes: The API method execution result that contains a raw bytes of a mailbox message attachment.
         """
 
+        params = {"message_uid": message_id, "format": file_format}
+        if file_name is not None:
+            params["file_name"] = file_name
+
         return await self.__send_request(
             module="Account",
             method="get_mailbox_message_attachment",
-            params={"message_uid": message_id, "format": file_format},
+            params=params,
             stream=True,
             access_token=access_token,
         )
