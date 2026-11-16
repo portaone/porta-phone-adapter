@@ -1,36 +1,47 @@
 import logging
+import math
 import re
-from datetime import datetime, timedelta
+import shutil
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from json import JSONDecodeError, loads as load_json
 from typing import List, Dict, Tuple, Optional
 
-from bss.dbs.firestore import FirestoreKeyValue
+import requests
+from jose import jwt as jose_jwt, JWTError
 from pydantic import BaseModel, Field, ValidationError
 
 from app_config import AppConfig
 from bss.adapters import BSSAdapter
+from bss.dbs.firestore import FirestoreKeyValue
 from bss.http_api import HTTPAPIConnectorWithLogin, OAuthSessionData, APIUser
-from request_trace import sanitize_data
 from bss.sessions import configure_session_storage
 from bss.types import (Capabilities, UserInfo, EndUser, ContactInfo,
                        CDRInfo, ConnectStatus, SessionInfo,
                        SIPRegistrationStatus, Direction,
                        Balance, BalanceType, Numbers, SIPServer, SIPInfo,
                        OTPCreateResponse, OTPVerifyRequest,
+                       UserVoicemailsResponse, VoicemailMessage, VoicemailMessageDetails,
+                       VoicemailMessageAttachment, VoicemailMessageType, UserVoicemailMessagePatch,
                        )
-from report_error import WebTritErrorException
+from report_error import WebTritErrorException, raise_webtrit_error
+from request_trace import sanitize_data
 
-VERSION = "0.3.4"
+VERSION = "0.4.0"
+
+NS_API_TIMEOUT = 20
 
 
 # Interface to Netsapiens cloud PBX https://docs.ns-api.com/reference/
 
-# class NetsapiensSession(OAuthSessionData):
-#     api_server: str = Field(default=None,
-#                             description="URL of API, on which the session resides")
-
 class NetsapiensDeviceFilter:
-    """Logic of finding the device entry for WebTrit in the list of devices"""
+    """Logic of finding the device entry for WebTrit in the list of devices.
+
+    Mind the name: NetSapiens rings a user's devices (`<OwnDevices>` in the default answer
+    rule) only when the device is named `<user>`, `<user>` plus one letter (`1001a`) or one
+    of its own suffixes (`1001wp`). A device named `1001wt` registers but never gets an
+    incoming call, so the filter is normally a single letter."""
 
     def __init__(self, pattern: str = "wt"):
         # Marker of the correct device entry in the list of devices
@@ -43,18 +54,24 @@ class NetsapiensDeviceFilter:
 
 class NetsapiensClient(BaseModel):
     client_id: str = Field(default=None,
-                           description="Client ID to be sent to API request for login")
+                           description="OAuth client ID, needed only for the password sign-in")
     client_secret: str = Field(default=None,
-                               description="Client secret to be sent to API request for login")
+                               description="OAuth client secret, needed only for the password sign-in")
     api_server: str = Field(default=None,
                             description="API server URL")
     domain: str = Field(default=None,
                         description="SIP domain (returned after the login)")
     device_filter: str = Field(default="WebTrit",
-                               description="Pattern to search for the correct device entry")
+                               description="Suffix of the user's device that the app registers as")
     default_sip_outbound_proxy: Optional[str] = Field(default=None)
     default_sip_port: int = Field(default=5060)
-    api_key: Optional[str] = Field(default=None)
+    api_key: Optional[str] = Field(default=None,
+                                   description="Domain API key: SIP account, delegated user tokens, "
+                                               "voicemail, recordings, DIDs")
+
+    @property
+    def has_oauth_client(self) -> bool:
+        return bool(self.client_id and self.client_secret)
 
 
 class NetsapiensUser(APIUser):
@@ -71,17 +88,25 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
         self.clients = {}
         if "netsapiens_clients" in kwargs:
             self.clients = kwargs.pop("netsapiens_clients")
+        self.token_storage = kwargs.pop("token_storage", "firestore")
 
         super().__init__(api_server, **kwargs)
 
     def init_token_storage(self):
-        """Initialize the storage for the API sessions to the remote PBX or BSS
-        Use persistent storage in Firestore"""
+        """Storage for the per-user NetSapiens tokens: Firestore by default,
+        memory when NETSAPIENS_TOKEN_STORAGE=memory (one replica, or a lab without Google Cloud).
+        A token lost with the memory storage is minted again from the domain API key."""
         if self.SHARED_TOKENS is None:
-            # in-memory cache is only good for debugging / testing
-            # in production, use a persistent storage
-            self.SHARED_TOKENS = FirestoreKeyValue(collection_name="NetsapiensTokens")
+            if self.token_storage == "memory":
+                self.SHARED_TOKENS = {}
+            else:
+                self.SHARED_TOKENS = FirestoreKeyValue(collection_name="NetsapiensTokens")
         return self.SHARED_TOKENS
+
+    def user_id(self, user: APIUser) -> str:
+        # The base class keys tokens by str(user), which includes the password and the client:
+        # a token stored at sign-in was never found again by calls that pass only user_id.
+        return getattr(user, "user_id", None) or (str(user) if user else None)
 
     def split_uid(self, uid: str) -> Tuple[str, str]:
         """Split the user ID like abc@xyz.com into domain xyz.com and user name abc"""
@@ -128,18 +153,26 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
                 else:
                     self.api_server = self.get_api_server(user_id=user.user_id)
 
+            # No stored token (a restart with the memory storage, or a session created by SSO):
+            # mint a delegated one from the domain API key instead of failing with "re-login".
+            if (not turn_off_login and user.password is None and user.ns_client
+                    and user.ns_client.api_key and self.get_auth_session(user) is None):
+                self.login_delegated(user)
+
         return super().send_rest_request(
             method, path, server, data, json, query_params, headers, turn_off_login, user
         )
 
     def login(self, user: NetsapiensUser) -> OAuthSessionData:
-        # populate the data properly
+        """Password grant with the domain's OAuth client; without a password, a delegated token."""
+        if user.password is None:
+            return self.login_delegated(user)
+
         req_data = dict(
             client_id=user.ns_client.client_id,
             client_secret=user.ns_client.client_secret,
             username=user.user_id,
             password=user.password,
-            # "scope": "",
             grant_type="password",
         )
         self.api_server = self.get_api_server(user_id=user.user_id,
@@ -161,13 +194,42 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
         logging.debug(f"Could not find an access token in the response {sanitize_data(res)}")
         raise ValueError("Could not find an access token in the response")
 
+    def login_delegated(self, user: NetsapiensUser) -> OAuthSessionData:
+        """A NetSapiens token that acts as the user, minted with the domain API key
+        (POST /ns-api/v2/jwt {user, domain}). Needs neither the user's password nor an OAuth client."""
+        uid, domain = self.split_uid(user.user_id)
+        client = user.ns_client or self.get_client(user.user_id)
+        if not client or not client.api_key:
+            raise WebTritErrorException(status_code=401, error_message="User authentication error")
+        r = requests.post(f"{client.api_server.rstrip('/')}/ns-api/v2/jwt",
+                          json={"user": uid, "domain": domain},
+                          headers={"Authorization": f"Bearer {client.api_key}", "Accept": "application/json"},
+                          timeout=NS_API_TIMEOUT)
+        token = None
+        if r.status_code == 200:
+            try:
+                token = (r.json() or {}).get("token")
+            except ValueError:
+                token = None
+        if not token:
+            logging.warning(f"Delegated token for {user.user_id} refused: HTTP {r.status_code}")
+            raise WebTritErrorException(status_code=401, error_message="User authentication error")
+        # NetSapiens issues it for 4 hours; renew a little earlier
+        session = OAuthSessionData(access_token=token, access_token_expires_at=datetime.now() + timedelta(hours=3))
+        self.store_auth_session(session, user)
+        return session
+
     def refresh(self, user: NetsapiensUser, auth_session: OAuthSessionData):
-        """Refresh access token using refresh_token"""
+        """Refresh access token using refresh_token; a delegated token is simply minted again"""
+        client = user.ns_client or self.get_client(user.user_id)
+        if not auth_session.refresh_token or not client.has_oauth_client:
+            return self.login_delegated(user)
+
         endpoint = self.access_token_path()
 
         req_data = dict(
-            client_id=user.ns_client.client_id,
-            client_secret=user.ns_client.client_secret,
+            client_id=client.client_id,
+            client_secret=client.client_secret,
             grant_type="refresh_token",
             refresh_token=auth_session.refresh_token
         )
@@ -247,7 +309,7 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
         path = self.CDR_PATH.replace("<domain>", domain).replace("<user_id>", uid)
 
         q_params = {}
-        # these seem to have no effect :-(
+        # these seem to have no effect :-( - the adapter filters by time itself
         if start_time:
             q_params["datetime-start"] = start_time.isoformat()
         if end_time:
@@ -260,32 +322,32 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
 
 
 class NetsapiensAdapter(BSSAdapter):
-    """Connect WebTrit and Netsapiens. Authenticate a user using the API, 
+    """Connect WebTrit and Netsapiens. Authenticate a user using the API,
     retrieve user's SIP credentials to be used by
-    WebTrit and return a list of other configured extenstions (to
+    WebTrit and return a list of other configured extensions (to
     be provided as 'Cloud PBX' contacts).
     Currently does not support OTP login.
-    
+
     Config variables:
-           
+
     NETSAPIENS_CLIENTS = JSON string with a list of dicts, each containing:
-        - client_id
-            For API access
-        - client_secret
-            For API access
         - api_server
         - domain
             Domain visible to the end-user; users are expected to login as
             username@domain
-        - device_filter  
-            used to find the correct entry in the list of devices (searches for
-            the given string in the name-full-name field). Default: "WebTrit"
+        - api_key
+            Domain API key (Office Manager scope limited to the domain is enough)
+        - client_id, client_secret
+            OAuth client, only for the password sign-in
+        - device_filter
+            suffix of the user's device the app registers as. Default: "WebTrit"
     NETSAPIENS_CLIENTS_FIRESTORE = "<name of the collection in Firestore>"
         Alternative method for storing the list of client, more suitable for
         production systems. The clients are stored in the Firestore
-        collection. 
+        collection.
 
     Either NETSAPIENS_CLIENTS or NETSAPIENS_CLIENTS_FIRESTORE env var should be defined.
+    The other options (SSO, web tab tokens, token storage) are described in README.md.
     """
 
     def get_client_list(self, config: AppConfig) -> List[NetsapiensClient]:
@@ -302,14 +364,15 @@ class NetsapiensAdapter(BSSAdapter):
         elif client_list := config.get_conf_val(
                 "Netsapiens", "Clients", default=""
         ):
-            logging.debug(f"Loading the client list from {client_list}")
+            logging.debug("Loading the client list from NETSAPIENS_CLIENTS")
+            clients = {}
             try:
                 clients = {
                     c.get("domain"): NetsapiensClient(**c)
                     for c in load_json(client_list)
                 }
             except JSONDecodeError as e:
-                logging.error(f"Could not parse the client list {client_list}: {e}")
+                logging.error(f"Could not parse the client list: {e}")
             return clients
 
         raise ValueError("Netsapiens client list is not defined in the config " +
@@ -319,14 +382,28 @@ class NetsapiensAdapter(BSSAdapter):
         super().__init__(config)
 
         self.clients = self.get_client_list(config)
-        logging.debug(f"NS Clients: {self.clients}")
+        logging.debug(f"NS Clients: {list(self.clients)}")
 
         self.api_client = NetsapiensAPI(
             api_server="http://localhost",  # does not really matter
-            netsapiens_clients=self.clients
+            netsapiens_clients=self.clients,
+            token_storage=str(config.get_conf_val("Netsapiens", "Token", "Storage",
+                                                  default="firestore")).lower(),
         )
         # need to init the sessions since we are derived from BSSAdapter
         self.sessions = configure_session_storage(config)
+
+        # sign-in with a token signed by the customer's SaaS (deeplink, QR, web widget, embedded page)
+        self.sso_secret = config.get_conf_val("Netsapiens", "SSO", "Secret", default="")
+        self.sso_issuer = config.get_conf_val("Netsapiens", "SSO", "Issuer", default="")
+        self.sso_audience = config.get_conf_val("Netsapiens", "SSO", "Audience", default="portadialer")
+        self.sso_signup = str(config.get_conf_val("Netsapiens", "SSO", "Signup", default="false")).lower() == "true"
+        # token for the customer's pages shown as app tabs
+        self.tab_secret = config.get_conf_val("Netsapiens", "Tab", "Token", "Secret", default="") or self.sso_secret
+        self.tab_issuer = config.get_conf_val("Netsapiens", "Tab", "Token", "Issuer", default="portadialer")
+        self.tab_audience = config.get_conf_val("Netsapiens", "Tab", "Token", "Audience", default="") or self.sso_issuer
+        self.tab_ttl = int(config.get_conf_val("Netsapiens", "Tab", "Token", "TTL", default=600))
+        self._used_jti = {}
 
     @classmethod
     def name(cls) -> str:
@@ -337,20 +414,60 @@ class NetsapiensAdapter(BSSAdapter):
         global VERSION
         return VERSION
 
+    # What the adapter can do. The deployment switches each one off with the usual
+    # CAPABILITIES_<NAME> setting; the sign-in ones also need their settings below.
+    CAPABILITIES = [
+        Capabilities.signup,
+        Capabilities.passwordSignin,
+        Capabilities.autoProvision,
+        Capabilities.customMethods,
+        Capabilities.callHistory,
+        Capabilities.extensions,
+        Capabilities.voicemail,
+        Capabilities.recordings,
+        # Core-side features: Core stores and enforces them, the PBX takes no part
+        Capabilities.internal_messaging,
+        Capabilities.notifications,
+        # without this entry Core does not send a push for a notification posted by a
+        # third party (e.g. a CRM announcing a call)
+        Capabilities.notifications_push,
+        Capabilities.direct_presence,
+        Capabilities.conference,
+        Capabilities.conversation_mute,
+        Capabilities.session_auto_terminate,
+        Capabilities.voicemail_save,
+        # trash and forward are Core-side features on top of voicemail
+        Capabilities.voicemail_trash,
+        Capabilities.voicemail_forward,
+        # Core subscribes to the PBX over SIP: NetSapiens answers dialog and
+        # message-summary subscriptions (it needs Expires above 120, Core sends 3600).
+        # It refuses a presence PUBLISH, so sipPresence is left out.
+        Capabilities.sip_dialogs,
+        Capabilities.sip_mwi,
+    ]
+    # on unless switched off: the base defaults keep most of them off
+    CONFIG_CAPABILITIES_OPTIONS = {
+        **BSSAdapter.CONFIG_CAPABILITIES_OPTIONS,
+        **{name: dict(BSSAdapter.CONFIG_CAPABILITIES_OPTIONS[name], default=True)
+           for name in ("AUTO_PROVISION", "CUSTOM_METHODS", "CDRS", "RECORDINGS", "VOICEMAIL",
+                        "NOTIFICATIONS", "NOTIFICATIONS_PUSH", "CONFERENCE")},
+    }
+
     def get_capabilities(self) -> list:
         """Capabilities of your hosted PBX / BSS / your API adapter"""
-        return [
-            # log in user with username / password
-            Capabilities.passwordSignin,
-            # log in user using one-time-password generated on the BSS side
-            # Capabilities.otpSignin,
-            # obtain user's call history
-            Capabilities.callHistory,
-            # obtain the list of other extensions in the PBX
-            Capabilities.extensions,
-            # download call recordings - currently not supported
-            # SupportedEnum.recordings
-        ]
+        unavailable = set()
+        if not any(c.has_oauth_client for c in self.clients.values()):
+            # the password grant needs the domain's OAuth client
+            unavailable.add(Capabilities.passwordSignin)
+        if not self.sso_secret:
+            unavailable |= {Capabilities.autoProvision, Capabilities.signup}
+        if not self.sso_signup:
+            # the mobile app's embedded sign-in page goes through signup; the web dialer
+            # shows a sign-up tab for it, so it is opt-in
+            unavailable.add(Capabilities.signup)
+        if not self.tab_secret:
+            unavailable.add(Capabilities.customMethods)
+        return [c for c in self.calculate_capabilities() if c not in unavailable]
 
     def generate_otp(self, user: UserInfo) -> OTPCreateResponse:
         """Not supported"""
@@ -375,20 +492,23 @@ class NetsapiensAdapter(BSSAdapter):
         # extension number is more convenient
         return user_data.get("uid", None)
 
-    # def parse_semicolon_list(self, semicolon_list: str) -> Dict[str, str]:
-    #     """Parse parameters in the form of key1=value1;key2=value2;..."""
-    #     pairs = semicolon_list.split(';')
+    @staticmethod
+    def _id(value) -> str:
+        """Session user ids and recording ids arrive as pydantic RootModels"""
+        return str(getattr(value, "root", value))
 
-    #     # Initialize an empty dictionary to store keys and values
-    #     key_value_dict = {}
+    # ------------------------------------------------------------------ NetSapiens REST with the domain API key
+    def _ns(self, method: str, user_id: str, path: str, **kw):
+        _, domain = self.split_uid(user_id)
+        client = self.clients.get(domain)
+        if not client or not client.api_key:
+            raise_webtrit_error(500, error_message=f"No API key configured for the NetSapiens domain {domain}")
+        url = f"{client.api_server.rstrip('/')}/ns-api/v2/domains/{domain}{path}"
+        return requests.request(method, url, headers={"Authorization": f"Bearer {client.api_key}",
+                                                      "Accept": "application/json"},
+                                timeout=NS_API_TIMEOUT, **kw)
 
-    #     # Loop through each pair and split by '=' only at the first occurrence
-    #     for pair in pairs:
-    #         if '=' in pair:
-    #             key, value = pair.split('=', 1)  # Split by '=' only at the first occurrence
-    #             key_value_dict[key] = value
-    #     return key_value_dict
-
+    # ------------------------------------------------------------------ sign-in
     def authenticate(self, user: UserInfo, password: str = None) -> SessionInfo:
         """Authenticate user with username and password and obtain an API token for
         further requests."""
@@ -406,6 +526,9 @@ class NetsapiensAdapter(BSSAdapter):
                 status_code=422,
                 error_message=f"Unknown Netsapiens domain {domain}",
             )
+        if not client.has_oauth_client or not password:
+            # without an OAuth client NetSapiens cannot check the password at all
+            raise WebTritErrorException(status_code=401, error_message="User authentication error")
         token_data = self.api_client.login(NetsapiensUser(
             user_id=user.login,
             password=password,
@@ -425,6 +548,65 @@ class NetsapiensAdapter(BSSAdapter):
             error_message="User authentication error",
         )
 
+    def _sso_user(self, token: str) -> str:
+        """The NetSapiens user a token signed by the customer's SaaS vouches for.
+        Checks the signature (HS256, NETSAPIENS_SSO_SECRET), issuer, audience, expiry and that
+        the token (its jti) was not used before."""
+        if not self.sso_secret:
+            raise_webtrit_error(501, error_message="Sign-in with a token is not configured")
+        try:
+            claims = jose_jwt.decode(token, self.sso_secret, algorithms=["HS256"],
+                                     audience=self.sso_audience, issuer=self.sso_issuer or None)
+        except JWTError as e:
+            raise_webtrit_error(401, error_message=f"Sign-in token rejected: {e}", extra_error_code="invalid_token")
+        now = datetime.now(timezone.utc).timestamp()
+        self._used_jti = {k: v for k, v in self._used_jti.items() if v > now}
+        jti = claims.get("jti")
+        if not jti or jti in self._used_jti:
+            raise_webtrit_error(401, error_message="Sign-in token already used", extra_error_code="invalid_token")
+        self._used_jti[jti] = claims.get("exp", now + 300)
+        user_id = claims.get("sub", "")
+        _, domain = self.split_uid(user_id)
+        if not domain or domain not in self.clients:
+            raise_webtrit_error(401, error_message=f"Unknown NetSapiens user {user_id}",
+                                extra_error_code="invalid_token")
+        return user_id
+
+    def _session_for(self, user_id: str) -> SessionInfo:
+        """A session for a user the customer's SaaS vouched for: no password, a delegated NS token"""
+        client = self.clients[self.split_uid(user_id)[1]]
+        self.api_client.login_delegated(NetsapiensUser(user_id=user_id, ns_client=client))
+        session = self.sessions.create_session(UserInfo(user_id=user_id, login=user_id))
+        self.sessions.store_session(session)
+        return session
+
+    def autoprovision_session(self, config_token: str, tenant_id: str = None) -> SessionInfo:
+        """Deeplink, QR code and the web dialer widget: config_token is the SaaS-signed token"""
+        return self._session_for(self._sso_user(config_token))
+
+    def signup(self, user_data, tenant_id: str = None):
+        """The mobile app's embedded sign-in page posts the SaaS-signed token as sso_token"""
+        extra = getattr(user_data, "model_extra", None) or (user_data if isinstance(user_data, dict) else {})
+        token = extra.get("sso_token") or extra.get("config_token")
+        if not token:
+            raise_webtrit_error(422, error_message="sso_token is missing", extra_error_code="validation_error")
+        return self._session_for(self._sso_user(token))
+
+    # ------------------------------------------------------------------ token for the customer's web tabs
+    def custom_method_private(self, session, user_id, method_name, data, headers={}, tenant_id=None, lang=None,
+                              **kw):
+        if method_name != "external-page-access-token" or not self.tab_secret:
+            raise_webtrit_error(404, error_message=f"Unknown method {method_name}")
+        uid = self._id(user_id) if user_id else self._id(session.user_id)
+        exp = datetime.now(timezone.utc) + timedelta(seconds=self.tab_ttl)
+        claims = {"iss": self.tab_issuer, "sub": uid, "exp": int(exp.timestamp())}
+        if self.tab_audience:
+            claims["aud"] = self.tab_audience
+        token = jose_jwt.encode(claims, self.tab_secret, algorithm="HS256")
+        # the app asks for a new token when this one expires, so there is no separate refresh flow
+        return {"access_token": token, "refresh_token": token, "expires_at": exp.isoformat()}
+
+    # ------------------------------------------------------------------ user and contacts
     def retrieve_user(self, session: SessionInfo, user: UserInfo) -> EndUser:
         """Obtain user's information - most importantly, his/her SIP credentials."""
 
@@ -442,7 +624,27 @@ class NetsapiensAdapter(BSSAdapter):
                 if ext.get("uid") == user.user_id:
                     device.update(ext)
                     break
-        return self.netsapiens_to_webtrit_obj(device, produce_user_info=True, client=client)
+        end_user = self.netsapiens_to_webtrit_obj(device, produce_user_info=True, client=client)
+        self._apply_dids(end_user, user.user_id)
+        return end_user
+
+    def _apply_dids(self, end_user: EndUser, user_id: str):
+        """DIDs are not on the user: take the ones routed to this user, so Core can find the
+        user by phone number (a third-party push addresses users by number)"""
+        if not end_user.numbers:
+            return
+        uid, _ = self.split_uid(user_id)
+        try:
+            r = self._ns("GET", user_id, "/phonenumbers")
+            numbers = r.json() if r.status_code == 200 else []
+        except Exception as e:
+            logging.warning(f"Could not read the DIDs of {user_id}: {e}")
+            return
+        dids = [f"+{p['phonenumber']}" for p in numbers or []
+                if p.get("phonenumber") and str(p.get("dial-rule-translation-destination-user")) == str(uid)]
+        if dids:
+            end_user.numbers.main = dids[0]
+            end_user.numbers.additional = dids[1:]
 
     def retrieve_contacts(self, session: SessionInfo, user: UserInfo) -> List[ContactInfo]:
         """List of other extensions in the PBX"""
@@ -454,8 +656,31 @@ class NetsapiensAdapter(BSSAdapter):
             for x in ext_list
             if x.get("uid") != user.user_id
         ]
-
+        self._apply_registration_state(contacts, user.user_id)
         return contacts
+
+    def _apply_registration_state(self, contacts: List[ContactInfo], user_id: str):
+        """The contacts endpoint carries no registration state: read it from the domain's devices"""
+        try:
+            r = self._ns("GET", user_id, "/devices")
+            devices = r.json() if r.status_code == 200 else None
+        except Exception as e:
+            logging.warning(f"Could not read device registration states: {e}")
+            return
+        if not isinstance(devices, list):
+            return
+        online = {str(d.get("user")) for d in devices if d.get("device-sip-registration-state") == "registered"}
+        for c in contacts:
+            ext = c.numbers.ext if c.numbers else None
+            c.sip_status = SIPRegistrationStatus.registered if ext in online else SIPRegistrationStatus.notregistered
+
+    def retrieve_contact_by_user_id(self, session: SessionInfo, user: UserInfo, user_id: str) -> ContactInfo:
+        """A single extension of the domain; user_id is its user@domain"""
+        for contact in self.retrieve_contacts(session, user):
+            if self._id(contact.user_id) == user_id:
+                return contact
+        raise_webtrit_error(404, error_message=f"There is no extension with such id: {user_id}",
+                            extra_error_code="contact_not_found")
 
     def retrieve_contacts_v2(
             self,
@@ -468,7 +693,7 @@ class NetsapiensAdapter(BSSAdapter):
             sms_capable: bool = False,
     ) -> tuple[List[ContactInfo], int]:
         """
-        Retrieve contacts with pagination (no search).
+        Retrieve contacts with pagination, search and the lookup by phone numbers.
 
         Returns:
             (paginated_contacts, total_count)
@@ -479,14 +704,22 @@ class NetsapiensAdapter(BSSAdapter):
         contacts = self.retrieve_contacts(session, user)
         if sms_capable:
             contacts = [c for c in contacts if c.numbers and c.numbers.sms]
+        if phone_numbers:
+            wanted = {str(p).lstrip("+") for p in phone_numbers}
+            contacts = [c for c in contacts if c.numbers and wanted & {
+                str(n).lstrip("+") for n in [c.numbers.main, c.numbers.ext, *(c.numbers.additional or [])] if n}]
+        if search:
+            s = search.lower()
+            contacts = [c for c in contacts
+                        if s in f"{c.first_name or ''} {c.last_name or ''}".lower()
+                        or (c.numbers and any(s in str(n) for n in [c.numbers.main, c.numbers.ext] if n))]
 
         start_index = (page - 1) * items_per_page
         end_index = start_index + items_per_page
 
-        paginated_contacts = contacts[start_index:end_index]
+        return contacts[start_index:end_index], len(contacts)
 
-        return paginated_contacts, len(contacts)
-
+    # ------------------------------------------------------------------ call history and recordings
     def retrieve_calls(self,
                        session: SessionInfo,
                        user: UserInfo,
@@ -498,56 +731,208 @@ class NetsapiensAdapter(BSSAdapter):
                        ) -> Tuple[List[CDRInfo], int]:
         if time_floor is not None and (time_from is None or time_from < time_floor):
             time_from = time_floor
+        page = page or 1
+        items_per_page = items_per_page or 100
+        me, _ = self.split_uid(user.user_id)
 
-        # Get all CDRs first
-        cdrs = self.api_client.get_cdrs(user.user_id,
-                                        start_time=time_from,
-                                        end_time=time_to)
+        cdrs = self.api_client.get_cdrs(user.user_id, start_time=time_from, end_time=time_to) or []
+        items = [self.netsapiens_to_webtrit_cdr(c, me=me) for c in cdrs]
 
-        # Calculate pagination indices
-        start_idx = (page - 1) * items_per_page
-        end_idx = start_idx + items_per_page
+        def aware(t):
+            return t if t is None or t.tzinfo else t.replace(tzinfo=timezone.utc)
 
-        # Return only the requested page of results
-        paginated_cdrs = [self.netsapiens_to_webtrit_cdr(x)
-                          for x in cdrs[start_idx:end_idx]]
+        # NetSapiens ignores the date parameters
+        if time_from:
+            items = [i for i in items if i.connect_time and aware(i.connect_time) >= aware(time_from)]
+        if time_to:
+            items = [i for i in items if i.connect_time and aware(i.connect_time) <= aware(time_to)]
+        items.sort(key=lambda i: aware(i.connect_time) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
-        return paginated_cdrs, len(paginated_cdrs)
+        start = (page - 1) * items_per_page
+        page_items = items[start:start + items_per_page]
 
-    # call recording is not supported in this example
-    def retrieve_call_recording(
-            self, session: SessionInfo, call_recording: str
-    ) -> bytes:
-        """Get the media file for a previously recorded call."""
-        # not yet implemented
-        pass
+        # the CDR does not say whether the call was recorded: ask for this page's answered calls
+        answered = [i for i in page_items if i.status == ConnectStatus.accepted and i.call_id]
+        if answered:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                found = list(pool.map(lambda i: self._recording(user.user_id, i.call_id), answered))
+            for item, rec in zip(answered, found):
+                if rec:
+                    item.recording_id = item.call_id
 
+        return page_items, len(items)
+
+    def _recording(self, user_id: str, call_id: str) -> Optional[dict]:
+        uid, _ = self.split_uid(user_id)
+        try:
+            r = self._ns("GET", user_id, f"/users/{uid}/recordings/{call_id}")
+        except requests.RequestException as e:
+            logging.warning(f"Could not read the recording of {call_id}: {e}")
+            return None
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        d = d[0] if isinstance(d, list) and d else d
+        return d if isinstance(d, dict) and d.get("call-id") else None
+
+    def retrieve_call_recording(self, session: SessionInfo, recording_id) -> tuple:
+        """The recording of a call, as WAV. NetSapiens keeps it as GSM 6.10, which browsers cannot
+        play, so it is re-encoded to PCM when ffmpeg is installed."""
+        recording_id = self._id(recording_id)
+        rec = self._recording(self._id(session.user_id), recording_id)
+        if not rec:
+            raise_webtrit_error(404, error_message="Recording not found", extra_error_code="recording_not_found")
+        r = requests.get(rec["file-access-url"], timeout=60)
+        if r.status_code != 200 or not r.content:
+            # NetSapiens keeps a recording "unconverted" for a minute or two after the call
+            raise_webtrit_error(404, error_message=f"Recording is not ready yet ({rec.get('call-recording-status')})",
+                                extra_error_code="recording_not_found")
+        return "audio/wav", iter([self._transcode(r.content, "wav") or r.content])
+
+    # ffmpeg output options per format the adapter can deliver
+    TRANSCODE = {
+        "wav": ["-acodec", "pcm_s16le", "-ar", "8000", "-ac", "1", "-f", "wav"],
+        "mp3": ["-acodec", "libmp3lame", "-ar", "8000", "-ac", "1", "-b:a", "16k", "-f", "mp3"],
+    }
+
+    @classmethod
+    def _transcode(cls, data: bytes, file_format: str) -> Optional[bytes]:
+        """Re-encode audio with ffmpeg; None when ffmpeg is missing or fails"""
+        if not shutil.which("ffmpeg"):
+            return None
+        try:
+            out = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", "pipe:0", *cls.TRANSCODE[file_format], "pipe:1"],
+                                 input=data, capture_output=True, timeout=30, check=True).stdout
+            return out or None
+        except (subprocess.SubprocessError, OSError) as e:
+            logging.warning(f"Re-encoding audio to {file_format} failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------ voicemail
+    # NetSapiens keeps voicemail in folders: "new" (not heard) and "save" (heard and kept);
+    # deleting moves a message to its "trash" folder.
+    VM_FOLDERS = ("new", "save")
+
+    @staticmethod
+    def _size_kb(text) -> int:
+        """NetSapiens reports "57.86 KB"; the API's voicemail sizes are whole KB (Core
+        compares them with its forwarding limit, VOICEMAIL_FORWARD_MAX_SIZE_KB)"""
+        try:
+            num, unit = str(text).split()
+            kb = float(num) * {"B": 1 / 1024, "KB": 1, "MB": 1024}[unit.upper()]
+        except (ValueError, TypeError, KeyError):
+            return 0
+        return math.ceil(kb)
+
+    def _vm_all(self, user_id: str) -> List[dict]:
+        uid, _ = self.split_uid(user_id)
+        out = []
+        for folder in self.VM_FOLDERS:
+            r = self._ns("GET", user_id, f"/users/{uid}/voicemails/{folder}")
+            if r.status_code == 200:
+                out += [dict(m, _folder=folder) for m in (r.json() or [])]
+        return out
+
+    def _vm_find(self, user_id: str, message_id: str) -> dict:
+        for m in self._vm_all(user_id):
+            if m.get("filename") == message_id:
+                return m
+        raise_webtrit_error(404, error_message="Voicemail message not found", extra_error_code="message_not_found")
+
+    def _vm_model(self, m: dict, user_id: str) -> dict:
+        created = m.get("created-datetime")
+        return dict(
+            id=m["filename"],
+            type=VoicemailMessageType.VOICE,
+            duration=float(m.get("file-duration-seconds") or 0),
+            size=self._size_kb(m.get("file-size-kilobytes")),
+            date=datetime.fromisoformat(created) if created else datetime.now(timezone.utc),
+            seen=m["_folder"] != "new",
+            saved=m["_folder"] == "save",
+            # the live API answers voicemail-from-*, the API reference still shows FromUser / FromName
+            sender=str(m.get("voicemail-from-user") or m.get("FromUser") or m.get("voicemail-from-name") or ""),
+            receiver=self.split_uid(user_id)[0],
+        )
+
+    def retrieve_voicemails(self, session, user, from_date=None, to_date=None) -> UserVoicemailsResponse:
+        msgs = [self._vm_model(m, user.user_id) for m in self._vm_all(user.user_id)]
+
+        def as_dt(x):
+            if x is None:
+                return None
+            d = x if isinstance(x, datetime) else datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+            # clients send plain dates (2026-11-14), which parse as naive
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+        f, t = as_dt(from_date), as_dt(to_date)
+        if f:
+            msgs = [m for m in msgs if m["date"] >= f]
+        if t:
+            msgs = [m for m in msgs if m["date"] <= t]
+        msgs.sort(key=lambda m: m["date"], reverse=True)
+        return UserVoicemailsResponse(messages=[VoicemailMessage(**m) for m in msgs],
+                                      has_new_messages=any(not m["seen"] for m in msgs))
+
+    def retrieve_voicemail_message_details(self, session, user, message_id) -> VoicemailMessageDetails:
+        m = self._vm_find(user.user_id, message_id)
+        data = self._vm_model(m, user.user_id)
+        data["sender"] = data["sender"] or "unknown"
+        return VoicemailMessageDetails(**data, attachments=[VoicemailMessageAttachment(
+            type="audio", subtype="wav", size=data["size"], filename=m["filename"])])
+
+    def retrieve_voicemail_message_attachment(self, session, message_id, file_format) -> tuple:
+        """NetSapiens serves wav. mp3 is what Core asks for when it keeps a copy of a forwarded
+        message, so it is re-encoded with ffmpeg; without ffmpeg only wav is offered."""
+        file_format = (file_format or "wav").lower()
+        if file_format not in self.TRANSCODE or (file_format != "wav" and not shutil.which("ffmpeg")):
+            raise_webtrit_error(422, error_message=f"{file_format} is not available from NetSapiens",
+                                extra_error_code="unsupported_file_format")
+        m = self._vm_find(self._id(session.user_id), message_id)
+        if file_format == "wav":
+            r = requests.get(m["file-access-url"], stream=True, timeout=30)
+            if r.status_code != 200:
+                raise_webtrit_error(404, error_message="Voicemail audio not available", extra_error_code="message_not_found")
+            return r.headers.get("Content-Type", "audio/wav"), r.iter_content(8192)
+        r = requests.get(m["file-access-url"], timeout=30)
+        if r.status_code != 200 or not r.content:
+            raise_webtrit_error(404, error_message="Voicemail audio not available", extra_error_code="message_not_found")
+        data = self._transcode(r.content, file_format)
+        if data is None:
+            raise_webtrit_error(500, error_message=f"Could not convert the voicemail to {file_format}")
+        return "audio/mpeg", iter([data])
+
+    def patch_voicemail_message(self, session, message_id, body) -> UserVoicemailMessagePatch:
+        user_id = self._id(session.user_id)
+        m = self._vm_find(user_id, message_id)
+        uid, _ = self.split_uid(user_id)
+        # NetSapiens has one transition: new -> save (heard and kept); it cannot be undone
+        if (body.seen or body.saved) and m["_folder"] == "new":
+            self._ns("PATCH", user_id, f"/users/{uid}/voicemails/new/{message_id}/save")
+            m["_folder"] = "save"
+        return UserVoicemailMessagePatch(seen=m["_folder"] != "new", saved=m["_folder"] == "save")
+
+    def delete_voicemail_message(self, session, message_id) -> None:
+        user_id = self._id(session.user_id)
+        m = self._vm_find(user_id, message_id)
+        uid, _ = self.split_uid(user_id)
+        r = self._ns("DELETE", user_id, f"/users/{uid}/voicemails/{m['_folder']}/{message_id}")
+        if r.status_code >= 400:
+            raise_webtrit_error(r.status_code, error_message=f"NetSapiens refused the delete: HTTP {r.status_code}")
+
+    # ------------------------------------------------------------------ mapping
     def netsapiens_to_webtrit_obj(self, ext: dict, produce_user_info=True,
-                                  client: Optional[NetsapiensClient] = None) -> dict:
-        """Convert the JSON data returned by FreePBX API into an dictionary
-        that can be used to crate a WebTrit object (either EndUser or ContactInfo)):
-
-            Args:
-                * ext (dict): A dictionary (representing JSON structure,
-                    returned by the FreePBX API), which contains the
-                    extension's information.
-                * produce_user_info (bool, optional): A flag to indicate
-                    whether to generate data for EndUser (info about a
-                    specific extension, includes SIP credentials, etc.) 
-                    or ContactInfo (basic info about other extensions in PBX)
-
-            Returns:
-                dict: data to be passed to object's constructor
-        """
+                                  client: Optional[NetsapiensClient] = None):
+        """Convert an extension (device + user) returned by the NetSapiens API into
+        an EndUser (with SIP credentials) or a ContactInfo."""
 
         def parse_sip_uri(sip_uri: str):
             """
             Parses a SIP URI into protocol, username, hostname, and optional port
                 (default port = 5060).
-            
+
             Args:
                 sip_uri (str): The SIP URI to parse (e.g., "sip:100@engagep2p:5061").
-            
+
             Returns:
                 dict: A dictionary containing protocol, username, hostname, and port.
             """
@@ -568,14 +953,16 @@ class NetsapiensAdapter(BSSAdapter):
         firstname = ext.get("name-first-name", ext.get("name-full-name", ""))
         lastname = ext.get("name-last-name", "")
 
-        # TODO: numbers
         data = {
-            "company_name": "Netsapiens",  # TODO?
+            "company_name": ext.get("domain", ""),
             "first_name": firstname,
             "last_name": lastname,
+            # Core maps over sms / additional: null there fails the sign-in
             "numbers": Numbers(
-                ext=ext.get("user", ""),
-                main=ext.get("user", ""),
+                ext=str(ext.get("user", "")),
+                main=str(ext.get("user", "")),
+                additional=[],
+                sms=[],
             ),
             "balance": Balance(balance_type=BalanceType.inapplicable, )
         }
@@ -593,7 +980,6 @@ class NetsapiensAdapter(BSSAdapter):
             )
             data["sip"] = SIPInfo(
                 username=ext.get("device"),
-                # username=ext.get("login-username", ""),
                 display_name=display_name,
                 password=ext.get("device-sip-registration-password", ""),
                 sip_server=SIPServer(
@@ -604,15 +990,14 @@ class NetsapiensAdapter(BSSAdapter):
             )
             return EndUser(**data)
         else:
-            # TODO: find out whether we can get the real
-            # registration status via API - for now all extensions
-            # are assumed to be registered
+            # without an id every contact looks the same to a client (favorites, name lookup)
+            data["user_id"] = ext.get("uid")
             data["sip_status"] = SIPRegistrationStatus.registered \
                 if ext.get("device-sip-registration-state", "") == "registered" else SIPRegistrationStatus.notregistered
             try:
                 return ContactInfo(**data)
-            except ValidationError as e:
-                del data["email"]
+            except ValidationError:
+                data.pop("email", None)
                 return ContactInfo(**data)
 
     def map_disconnect_status(self, duration: int, status: str) -> ConnectStatus:
@@ -626,33 +1011,46 @@ class NetsapiensAdapter(BSSAdapter):
 
         return ConnectStatus.error
 
-    def netsapiens_to_webtrit_cdr(self, cdr: dict) -> CDRInfo:
-        """Convert the JSON data returned by Netsapiens API into an dictionary
-        that can be used to crate a WebTrit object (either EndUser or ContactInfo)):
-        """
+    def netsapiens_to_webtrit_cdr(self, cdr: dict, me: Optional[str] = None) -> CDRInfo:
+        """Convert a NetSapiens CDR into a WebTrit one, as seen by the user `me` (extension number).
+
+        - caller / callee are user numbers (call-orig-user, call-orig-to-user), not device names;
+        - the direction is relative to `me`: call-direction is not "incoming for this user";
+        - the duration is the talk time; an unanswered incoming call is missed."""
         try:
             x = cdr.get("call-start-datetime")
             start = datetime.fromisoformat(x) if x else None
         except (ValueError, TypeError) as e:
-            logging.error(f"Invalid datetime format for call-answer-datetime: {cdr.get('call-answer-datetime')} {e}")
+            logging.error(f"Invalid datetime format for call-start-datetime: {cdr.get('call-start-datetime')} {e}")
             start = None
-        duration = cdr.get("call-total-duration-seconds", 0)
-        if start:
-            end = start + timedelta(seconds=duration)
-        else:
-            end = None
+        talk = int(cdr.get("call-talking-duration-seconds") or 0)
+        total = int(cdr.get("call-total-duration-seconds") or 0)
+        end = start + timedelta(seconds=total) if start else None
 
-        return CDRInfo(call_id=cdr.get("call-orig-call-id"),
-                       direction=Direction.incoming if cdr.get("call-direction") == 1 else Direction.outgoing,
-                       caller=cdr.get("call-orig-caller-id"),
-                       callee=cdr.get("call-orig-request-user"),
+        caller = str(cdr.get("call-orig-user") or cdr.get("call-orig-from-user") or cdr.get("call-orig-caller-id") or "")
+        callee = str(cdr.get("call-orig-to-user") or cdr.get("call-orig-request-user") or "")
+        if me is not None:
+            incoming = caller != str(me)
+        else:
+            incoming = cdr.get("call-direction") == 1
+        answered = bool(cdr.get("call-answer-datetime")) and talk > 0
+        reason = cdr.get("call-disconnect-reason-text") or ""
+        if answered:
+            status = ConnectStatus.accepted
+        elif incoming:
+            status = ConnectStatus.missed
+        elif "Cancel" in reason:
+            status = ConnectStatus.declined
+        else:
+            status = ConnectStatus.failed
+
+        call_id = cdr.get("call-orig-call-id")
+        return CDRInfo(call_id=str(call_id) if call_id is not None else None,
+                       direction=Direction.incoming if incoming else Direction.outgoing,
+                       caller=caller,
+                       callee=callee,
                        connect_time=start,
                        disconnect_time=end,
-                       duration=duration,
-                       status=self.map_disconnect_status(duration, cdr.get("call-disconnect-reason-text")),
-                       # TODO: find out how to get the recording ID
+                       duration=talk,
+                       status=status,
                        recording_id=None)
-
-    def signup(self, user_data, tenant_id: str = None):
-        """Create a new user as a part of the sign-up process - not supported yet"""
-        pass
