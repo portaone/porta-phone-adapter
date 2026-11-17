@@ -1251,7 +1251,15 @@ async def delete_user_voicemail_message(
 )
 async def get_user_voicemail_message_attachment(
         message_id: str,
-        file_format: str = None,
+        file_format: Optional[str] = Query(
+            default=None,
+            description=(
+                "`wav`, `mp3` or `au` for a voice message; `pdf`, `tiff` (`tif`) or `png` for a fax. "
+                "Omitted, a voice message comes as `wav` and a fax as its own document. A fax stored "
+                "as one file per page comes as a ZIP of them all. A format the message does not have, "
+                "an audio format for a fax included, is refused with `unsupported_file_format`."
+            ),
+        ),
         auth_data: HTTPAuthorizationCredentials = Depends(security),
         _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
 ) -> Union[
