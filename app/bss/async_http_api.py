@@ -371,8 +371,11 @@ class AsyncHTTPAPIConnector(ABC):
                 logging.debug(f"Request error: {e}")
 
                 response_content = {}
+                status_code = 500
+                text = f"{e}"
                 response = getattr(e, "response", None)
                 if response is not None:
+                    status_code = response.status_code
                     try:
                         # Streamed error responses are not read yet; read before json().
                         await response.aread()
@@ -381,7 +384,12 @@ class AsyncHTTPAPIConnector(ABC):
                     try:
                         response_content = response.json()
                     except ValueError:
-                        pass
+                        # A body that is not JSON (a crashed BSS handler, a proxy page) would
+                        # otherwise leave no trace of what the BSS answered (WT-2259).
+                        try:
+                            text = f"{e}: {truncate_log_message(sanitize_text(response.text), 500)}"
+                        except Exception:
+                            pass
 
                 raise_webtrit_error(500,
                                     error_message="Request execution error on the BSS/VoIP system side",
@@ -390,8 +398,8 @@ class AsyncHTTPAPIConnector(ABC):
                                                           'url': url,
                                                       } | params,
                                     bss_response_trace={
-                                        'status_code': 500,
-                                        'text': f"{e}",
+                                        'status_code': status_code,
+                                        'text': text,
                                         'response_content': response_content
                                     }
                                     )
