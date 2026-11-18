@@ -236,6 +236,15 @@ match a pair a page edge splits; those rows are never returned. A pair split by 
 `time_from`/`time_to` edge stays unmatched. `total` stays the switch's count, so a page
 can come back short; lowering it would drop the last page from a client's count.
 
+### A number lookup stays within the user's customer (WT-2333)
+
+`get_account_list` sends `get_only_real_accounts=1`, so an alias row is never in it, and
+`retrieve_contacts_v2` finds an alias number with `get_account_info(id=...)` - which has no
+customer filter and searches the whole switch. Its result, after `_resolve_master`, is kept
+only when `_is_own_customer` finds its `i_customer` in `all_i_customers`; without it a
+lookup exposed another customer's account, extension and SIP status. Do not drop the
+alias step to fix a leak, and do not add another one without the check.
+
 ### Callers waiting are keyed by `i_c_queue`, not `huntgroup_id`
 
 `count_callers_waiting` keys a `queued` call of `CallControl/get_sip_calls_list` by

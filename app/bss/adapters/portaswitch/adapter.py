@@ -1314,6 +1314,15 @@ class PortaSwitchAdapter(BSSAdapter):
                         logging.debug(f"Failed to resolve master account {master_id}: {e}")
                 return account
 
+            def _is_own_customer(account: dict) -> bool:
+                """get_account_info(id=...) searches the whole switch, not the user's customer:
+                keep only an account of the user's customer or its office hierarchy (WT-2333).
+                An alias shares its master's i_customer; a beneficiary keeps its own."""
+                try:
+                    return int(account["i_customer"]) in all_i_customers
+                except (KeyError, TypeError, ValueError):
+                    return False
+
             # If phone_numbers search is provided, ignore generic `search` and use a unified implementation
             if normalized_phone_numbers:
                 # Build extension number → i_account index once for all customers
@@ -1378,7 +1387,8 @@ class PortaSwitchAdapter(BSSAdapter):
                         account = (await self._admin_api.get_account_info(id=number)).get("account_info")
                         if account:
                             resolved = await _resolve_master(account)
-                            return int(resolved["i_account"]), resolved
+                            if _is_own_customer(resolved):
+                                return int(resolved["i_account"]), resolved
                     except Exception as e:
                         logging.debug(f"Account not found for alias/additional number {number}: {e}")
                     return None
@@ -1674,7 +1684,7 @@ class PortaSwitchAdapter(BSSAdapter):
                                 if alias_account and alias_account.get("i_master_account"):
                                     resolved = await _resolve_master(alias_account)
                                     i_acc = int(resolved["i_account"])
-                                    if i_acc not in accounts_dict:
+                                    if _is_own_customer(resolved) and i_acc not in accounts_dict:
                                         accounts_dict[i_acc] = resolved
                             except Exception as e:
                                 logging.debug(f"Failed to search by alias DID {search_stripped}: {e}")
