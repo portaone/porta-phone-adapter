@@ -944,7 +944,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 session_data = await self._account_api.refresh(refresh_token)
 
             access_token: str = session_data["access_token"]
-            account_info: dict = (await self._account_api.get_account_info(access_token=access_token))["account_info"]
+            account_info: dict = await self._refreshed_account_info(access_token)
             i_customer = account_info.get("i_customer")
 
             return SessionInfo(
@@ -968,6 +968,30 @@ class PortaSwitchAdapter(BSSAdapter):
                 raise refresh_token_invalid_error()
 
             raise error
+
+    async def _refreshed_account_info(self, access_token: str) -> dict:
+        """The account a just-refreshed session belongs to.
+
+        PortaSwitch has already rotated the tokens by now, so a failure here would leave
+        Core holding the spent refresh token, and its next refresh would end the session
+        (WT-2259). The account comes from the new token itself; the account read only adds
+        the customer, and is required only for a token that does not name its account.
+        """
+        try:
+            i_account = AccountAPI.decode_and_verify_access_token_expiration(access_token).get("i_account")
+        except JWTError:
+            i_account = None
+
+        try:
+            return (await self._account_api.get_account_info(access_token=access_token))["account_info"]
+        except WebTritErrorException as error:
+            if i_account is None:
+                raise
+            logging.warning(
+                f"Could not read account {i_account} after refreshing its session, "
+                f"its customer is left unreported: {error}"
+            )
+            return {"i_account": i_account}
 
     async def close_session(self, access_token: str) -> bool:
         """Closes the PortaSwitch account session.
