@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 from typing import AsyncIterator, List, Optional, Union
 
-from jose import JWTError, jwt
+import jwt
 
 from bss.adapters.portaswitch.config import PortaSwitchSettings
 from bss.adapters.portaswitch.exceptions import access_token_expired_error, service_read_only_error
@@ -514,8 +514,8 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
         only tells Core when to refresh.
         """
         try:
-            exp = jwt.get_unverified_claims(access_token).get("exp")
-        except JWTError:
+            exp = jwt.decode(access_token, options={"verify_signature": False}).get("exp")
+        except jwt.PyJWTError:
             return None
 
         if not isinstance(exp, (int, float)):
@@ -525,14 +525,5 @@ class AccountAPI(MediaResponseMixin, AsyncHTTPAPIConnector):
 
     @classmethod
     def decode_and_verify_access_token_expiration(cls, access_token: str) -> dict:
-        return jwt.decode(access_token, '', options={
-            "verify_signature": False,
-            'verify_aud': False,
-            'verify_iat': False,
-            'verify_exp': True,
-            'verify_nbf': False,
-            'verify_iss': False,
-            'verify_sub': False,
-            'verify_jti': False,
-            'verify_at_hash': False,
-        })
+        # Without the signature check PyJWT checks no claim but those switched on here.
+        return jwt.decode(access_token, options={"verify_signature": False, "verify_exp": True})

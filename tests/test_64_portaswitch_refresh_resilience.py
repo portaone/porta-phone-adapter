@@ -22,7 +22,7 @@ os.environ.setdefault("PORTASWITCH_ADMIN_API_LOGIN", "admin")
 os.environ.setdefault("PORTASWITCH_ADMIN_API_TOKEN", "token")
 os.environ.setdefault("PORTASWITCH_SIP_SERVER_HOST", "1.2.3.4")
 
-from jose import jwt  # noqa: E402
+import jwt  # noqa: E402
 
 import bss.async_http_api as async_http_api  # noqa: E402
 from bss.adapters.portaswitch.adapter import PortaSwitchAdapter  # noqa: E402
