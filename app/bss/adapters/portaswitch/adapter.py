@@ -9,7 +9,7 @@ from typing import AsyncIterator, Awaitable, Callable, Final, Optional, Dict, Li
 
 import urllib3
 from urllib.parse import urlsplit
-from jose.exceptions import ExpiredSignatureError, JWTError
+from jwt import ExpiredSignatureError, PyJWTError
 
 from app_config import AppConfig
 from bss.adapters import BSSAdapter
@@ -898,7 +898,7 @@ class PortaSwitchAdapter(BSSAdapter):
             data = self._account_api.decode_and_verify_access_token_expiration(access_token)
         except ExpiredSignatureError:
             raise access_token_expired_error()
-        except JWTError:
+        except PyJWTError:
             if self._settings.ENABLE_ON_DEMAND_SESSION_MIGRATION:
                 raise session_upgrade_needed_error()
             raise access_token_invalid_error()
@@ -979,7 +979,7 @@ class PortaSwitchAdapter(BSSAdapter):
         """
         try:
             i_account = AccountAPI.decode_and_verify_access_token_expiration(access_token).get("i_account")
-        except JWTError:
+        except PyJWTError:
             i_account = None
 
         try:

@@ -14,7 +14,7 @@ _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
 
 import pytest
-from jose import jwt as jose_jwt
+import jwt
 
 import bss.adapters.netsapiens as netsapiens
 from app_config import AppConfig
@@ -161,7 +161,8 @@ def sso_token(sub=f"1001@{DOMAIN}", **over):
     claims = {"iss": "your-saas", "aud": "portadialer", "sub": sub, "exp": int(time.time()) + 120,
               "jti": f"j-{time.time_ns()}"}
     claims.update(over)
-    return jose_jwt.encode(claims, secret, algorithm="HS256")
+    # None drops a claim
+    return jwt.encode({k: v for k, v in claims.items() if v is not None}, secret, algorithm="HS256")
 
 
 class TestCapabilities:
@@ -218,10 +219,16 @@ class TestSingleSignOn:
         assert error.value.status_code == 401
 
     @pytest.mark.parametrize("over", [{"secret": "wrong"}, {"exp": 1}, {"aud": "someone-else"},
-                                      {"iss": "not-your-saas"}, {"sub": "1001@unknown.example"}])
+                                      {"aud": None}, {"iss": "not-your-saas"}, {"iss": None},
+                                      {"sub": "1001@unknown.example"}])
     def test_a_bad_token_is_refused(self, adapter, over):
         with pytest.raises(WebTritErrorException) as error:
             adapter.autoprovision_session(sso_token(**over))
+        assert error.value.status_code == 401
+
+    def test_not_a_jwt_is_refused(self, adapter):
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.autoprovision_session("not-a-jwt")
         assert error.value.status_code == 401
 
     def test_the_embedded_sign_in_page_goes_through_signup(self, adapter):
@@ -366,7 +373,7 @@ class TestWebTabToken:
     def test_the_token_names_the_user(self, adapter):
         session = adapter.autoprovision_session(sso_token())
         answer = adapter.custom_method_private(session, f"1001@{DOMAIN}", "external-page-access-token", {})
-        claims = jose_jwt.decode(answer["access_token"], SSO_SECRET, algorithms=["HS256"], audience="your-saas")
+        claims = jwt.decode(answer["access_token"], SSO_SECRET, algorithms=["HS256"], audience="your-saas")
         assert claims["sub"] == f"1001@{DOMAIN}"
         assert claims["iss"] == "portadialer"
         assert answer["expires_at"]

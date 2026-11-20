@@ -3,8 +3,10 @@ FROM python:3.11-slim AS base
 RUN mkdir /app
 WORKDIR /app
 
-#RUN apt update
-#RUN apt-get install -f 
+# Security fixes of the Debian packages released after the base image was built.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash httpd
 RUN usermod -aG root httpd
@@ -22,7 +24,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+# The base image's setuptools carries its own copies of wheel and jaraco.context, which
+# only a newer setuptools updates.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Unit tests for the Gerrit check (WT-2002), see .jenkins/README.md:
 #   docker build --target test -t adapter_python-test . && docker run --rm adapter_python-test
@@ -41,7 +46,10 @@ CMD ["python", "-m", "pytest", "-p", "no:warnings", "tests", "--ignore-glob=test
 FROM base
 
 COPY app /app/
-RUN chmod 755 /app/start-web-server.sh
+# pip is only needed to build the image; the copy of setuptools it bundles is reported by
+# scanners as a vulnerable setuptools.
+RUN chmod 755 /app/start-web-server.sh \
+ && pip uninstall -y pip
 
 USER httpd
 

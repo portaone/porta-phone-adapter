@@ -22,9 +22,9 @@ black --line-length 119 <path>
 `pytest` needs the app dependencies importable (`app/requirements.txt` plus
 `tests/requirements.txt`); the unit tests add `app/` to `sys.path` themselves. `models.py`
 imports pydantic and every adapter module is pulled in through `bss.adapters`, so even a
-pure-unit test run needs `fastapi`, `pydantic*`, `httpx`, `google-cloud-firestore`,
-`google-cloud-pubsub` and `python-jose` present. `asyncio_mode = "strict"` — async tests
-carry an explicit `@pytest.mark.asyncio`.
+pure-unit test run needs `fastapi`, `pydantic*`, `httpx`, `google-cloud-firestore`, and
+`PyJWT` present. `asyncio_mode = "strict"` — async tests carry an explicit
+`@pytest.mark.asyncio`.
 
 ## This is the live adapter repository
 
