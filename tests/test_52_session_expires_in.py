@@ -23,7 +23,7 @@ os.environ.setdefault("PORTASWITCH_ADMIN_API_LOGIN", "admin")
 os.environ.setdefault("PORTASWITCH_ADMIN_API_TOKEN", "token")
 os.environ.setdefault("PORTASWITCH_SIP_SERVER_HOST", "1.2.3.4")
 
-from jose import jwt
+import jwt
 
 from bss.adapters.portaswitch.api.account import AccountAPI
 from bss.models import SessionResponse, SupportedEnum
@@ -47,6 +47,27 @@ class TestJwtExpiry:
 
     def test_not_a_jwt_is_unknown(self):
         assert AccountAPI.access_token_expires_in("not-a-jwt") is None
+
+
+class TestJwtVerification:
+    """PortaBilling signs its tokens with a key the adapter does not have: only `exp` is checked."""
+
+    def test_a_live_token_gives_its_claims(self):
+        claims = AccountAPI.decode_and_verify_access_token_expiration(
+            token({"i_account": 7, "exp": int(time.time()) + 60}))
+        assert claims["i_account"] == 7
+
+    def test_the_signature_is_not_checked(self):
+        other = jwt.encode({"i_account": 7, "exp": int(time.time()) + 60}, "another-key", algorithm="HS256")
+        assert AccountAPI.decode_and_verify_access_token_expiration(other)["i_account"] == 7
+
+    def test_an_expired_token_is_refused_as_expired(self):
+        with pytest.raises(jwt.ExpiredSignatureError):
+            AccountAPI.decode_and_verify_access_token_expiration(token({"exp": int(time.time()) - 60}))
+
+    def test_not_a_jwt_is_refused(self):
+        with pytest.raises(jwt.PyJWTError):
+            AccountAPI.decode_and_verify_access_token_expiration("not-a-jwt")
 
 
 class TestMintedSessions:

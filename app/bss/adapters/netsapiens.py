@@ -9,7 +9,7 @@ from json import JSONDecodeError, loads as load_json
 from typing import List, Dict, Tuple, Optional
 
 import requests
-from jose import jwt as jose_jwt, JWTError
+import jwt
 from pydantic import BaseModel, Field, ValidationError
 
 from app_config import AppConfig
@@ -555,9 +555,9 @@ class NetsapiensAdapter(BSSAdapter):
         if not self.sso_secret:
             raise_webtrit_error(501, error_message="Sign-in with a token is not configured")
         try:
-            claims = jose_jwt.decode(token, self.sso_secret, algorithms=["HS256"],
-                                     audience=self.sso_audience, issuer=self.sso_issuer or None)
-        except JWTError as e:
+            claims = jwt.decode(token, self.sso_secret, algorithms=["HS256"],
+                                audience=self.sso_audience, issuer=self.sso_issuer or None)
+        except jwt.PyJWTError as e:
             raise_webtrit_error(401, error_message=f"Sign-in token rejected: {e}", extra_error_code="invalid_token")
         now = datetime.now(timezone.utc).timestamp()
         self._used_jti = {k: v for k, v in self._used_jti.items() if v > now}
@@ -602,7 +602,7 @@ class NetsapiensAdapter(BSSAdapter):
         claims = {"iss": self.tab_issuer, "sub": uid, "exp": int(exp.timestamp())}
         if self.tab_audience:
             claims["aud"] = self.tab_audience
-        token = jose_jwt.encode(claims, self.tab_secret, algorithm="HS256")
+        token = jwt.encode(claims, self.tab_secret, algorithm="HS256")
         # the app asks for a new token when this one expires, so there is no separate refresh flow
         return {"access_token": token, "refresh_token": token, "expires_at": exp.isoformat()}
 

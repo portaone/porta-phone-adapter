@@ -137,8 +137,9 @@ pipeline {
           # Context is the repository root: the Dockerfile copies app/ from there, and the
           # .dockerignore that applies is the one beside it. No build args - the Dockerfile's
           # ARG defaults are overridden at deploy time by the addon-mart chart, and baking a
-          # value here would freeze it into the image.
-          docker build -f Dockerfile . \
+          # value here would freeze it into the image. --pull and --no-cache: a release takes the
+          # current base image and packages, not what an earlier build left in the agent's cache.
+          docker build --pull --no-cache -f Dockerfile . \
             -t "$IMAGE:$VERSION" \
             --label GIT_REVISION="$(git rev-parse HEAD)" \
             --label GIT_COMMIT_DATE="$(git show -s --format=%ci HEAD)"
