@@ -327,7 +327,7 @@ class PortaSwitchAdapter(BSSAdapter):
     capabilities required by WebTrit clients.
     """
 
-    VERSION: Final[str] = "1.6.1"
+    VERSION: Final[str] = "1.7.0"
     OTP_DELIVERY_CHANNEL: Final[DeliveryChannel] = DeliveryChannel.email
     # Served in /system-info; the apps pick the sign-in field's wording and keyboard from
     # it. An email is accepted too, looked up when no account has it as its id (WT-2212).
