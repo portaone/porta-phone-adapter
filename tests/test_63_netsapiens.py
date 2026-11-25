@@ -18,14 +18,23 @@ import jwt
 
 import bss.adapters.netsapiens as netsapiens
 from app_config import AppConfig
-from bss.dbs import TiedKeyValue
-from bss.sessions import SessionStorage
 from bss.types import (Capabilities, ConnectStatus, Direction, SIPRegistrationStatus, UserInfo,
                        ExtendedUserInfo, UserVoicemailMessagePatch)
 from report_error import WebTritErrorException
 
 DOMAIN = "northwind.example"
 SSO_SECRET = "sso-shared-secret"
+# signs the tokens of the fake NetSapiens; the adapter never knows it
+NS_SECRET = "netsapiens-own-key"
+SECRET_KEY_BASE = "adapter-secret-key-base"
+
+
+def ns_token(user, token_type="access", lifetime=4 * 3600, domain=DOMAIN):
+    """A token shaped like the ones NetSapiens issues (HS256, its own key)"""
+    now = int(time.time())
+    return jwt.encode({"iss": "ns.example", "aud": "ns", "sub": f"{user}@{domain}", "user": user,
+                       "domain": domain, "user_scope": "Basic User", "token_type": token_type,
+                       "iat": now, "exp": now + lifetime}, NS_SECRET, algorithm="HS256")
 
 DEVICES = {
     "1001": [{"device": "1001test", "device-sip-registration-password": "other"},
@@ -89,13 +98,28 @@ class FakeNetSapiens:
         self.jwt_requests = []
         self.auth = []
         self.moved = []
+        self.whoami = []
+        self.refused_users = set()
 
     def __call__(self, method, url, timeout=None, headers=None, json=None, **kwargs):
         self.auth.append((url, (headers or {}).get("Authorization")))
         path = url.split("/ns-api/v2", 1)[-1].split("?")[0]
         if path == "/jwt":
             self.jwt_requests.append(json)
-            return FakeResponse({"token": f"UT-{json['user']}", "refresh": "R"})
+            if json["user"] in self.refused_users:
+                return FakeResponse({"code": 403, "message": "Permission denied"}, status_code=403)
+            return FakeResponse({"token": ns_token(json["user"]), "refresh": ns_token(json["user"], "refresh")})
+        if path == "/domains/~/users/~":
+            # NetSapiens checks the signature of the token and says whose it is
+            token = (headers or {}).get("Authorization", "").removeprefix("Bearer ")
+            self.whoami.append(token)
+            try:
+                claims = jwt.decode(token, NS_SECRET, algorithms=["HS256"], audience="ns")
+            except jwt.PyJWTError:
+                return FakeResponse({"code": 401}, status_code=401)
+            if claims["token_type"] != "access":
+                return FakeResponse({"code": 401}, status_code=401)
+            return FakeResponse({"user": claims["user"], "domain": claims["domain"], "user-scope": "Basic User"})
         if path.endswith("/devices") and "/users/" in path:
             return FakeResponse(DEVICES.get(path.split("/users/")[1].split("/")[0], []))
         if path.endswith("/contacts"):
@@ -132,20 +156,24 @@ def ns(monkeypatch):
     return fake
 
 
-def make_adapter(monkeypatch, oauth=False, sso=True):
+def make_adapter(monkeypatch, oauth=False, sso=True, secret_key_base=SECRET_KEY_BASE):
     client = {"domain": DOMAIN, "api_server": "https://ns.example", "api_key": "domain-key",
               "device_filter": "a", "default_sip_outbound_proxy": "core.ns.example"}
     if oauth:
         client.update(client_id="cid", client_secret="csecret")
     monkeypatch.setenv("NETSAPIENS_CLIENTS", json.dumps([client]))
-    monkeypatch.setenv("NETSAPIENS_TOKEN_STORAGE", "memory")
+    if secret_key_base:
+        monkeypatch.setenv("SECRET_KEY_BASE", secret_key_base)
+    else:
+        monkeypatch.delenv("SECRET_KEY_BASE", raising=False)
     if sso:
         monkeypatch.setenv("NETSAPIENS_SSO_SECRET", SSO_SECRET)
         monkeypatch.setenv("NETSAPIENS_SSO_ISSUER", "your-saas")
     else:
         monkeypatch.delenv("NETSAPIENS_SSO_SECRET", raising=False)
-    monkeypatch.setattr(netsapiens, "configure_session_storage",
-                        lambda config: SessionStorage(session_db=TiedKeyValue()))
+    # a new adapter is a restart or another replica: the token cache of the API client is shared
+    # by the class, so it starts empty for each one
+    monkeypatch.setattr(netsapiens.NetsapiensAPI, "SHARED_TOKENS", None)
     subject = netsapiens.NetsapiensAdapter(AppConfig({}))
     subject.initialize()
     return subject
@@ -234,6 +262,108 @@ class TestSingleSignOn:
     def test_the_embedded_sign_in_page_goes_through_signup(self, adapter):
         session = adapter.signup({"sso_token": sso_token()})
         assert session.user_id.root == f"1001@{DOMAIN}"
+
+
+class TestStatelessSessions:
+    """Nothing about a session is stored: the access token is the NetSapiens token, the refresh
+    token is signed by the adapter, so a restart or another replica serves the same session."""
+
+    def test_the_app_gets_the_netsapiens_token(self, adapter):
+        session = adapter.autoprovision_session(sso_token())
+        claims = jwt.decode(session.access_token.root, NS_SECRET, algorithms=["HS256"], audience="ns")
+        assert claims["sub"] == f"1001@{DOMAIN}"
+        assert session.refresh_token is not None
+        # Core refreshes ahead of it: the NetSapiens token lives 4 hours
+        assert 4 * 3600 - 60 < session.expires_in <= 4 * 3600
+
+    def test_another_replica_takes_the_session_over(self, monkeypatch, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        other = make_adapter(monkeypatch)
+
+        checked = other.validate_session(session.access_token.root)
+        assert checked.user_id.root == f"1001@{DOMAIN}"
+        assert ns.whoami == [session.access_token.root]
+        # and acts with the app's own token, minting none
+        other.retrieve_contacts(checked, UserInfo(user_id=f"1001@{DOMAIN}"))
+        assert len(ns.jwt_requests) == 1
+        assert (f"https://ns.example/ns-api/v2/domains/{DOMAIN}/users/1001/contacts",
+                f"Bearer {session.access_token.root}") in ns.auth
+
+    def test_netsapiens_is_asked_once_for_a_while(self, adapter, ns):
+        token = ns_token("1001")
+        adapter.validate_session(token)
+        adapter.validate_session(token)
+        assert ns.whoami == [token]
+
+    @pytest.mark.parametrize("token", ["not-a-jwt", ns_token("1001", "refresh"),
+                                       jwt.encode({"sub": f"1001@{DOMAIN}", "domain": DOMAIN,
+                                                   "exp": int(time.time()) + 3600}, "forged", algorithm="HS256")])
+    def test_a_token_netsapiens_does_not_accept_is_refused(self, adapter, token):
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.validate_session(token)
+        assert error.value.status_code == 401
+
+    def test_an_expired_token_is_refused_without_asking(self, adapter, ns):
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.validate_session(ns_token("1001", lifetime=-10))
+        assert (error.value.status_code, error.value.code) == (401, "access_token_expired")
+        assert ns.whoami == []
+
+    def test_a_token_of_another_domain_is_refused(self, adapter):
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.validate_session(ns_token("1001", domain="other.example"))
+        assert error.value.status_code == 401
+
+    def test_another_replica_refreshes(self, monkeypatch, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        fresh = make_adapter(monkeypatch).refresh_session(session.refresh_token.root)
+        assert fresh.user_id.root == f"1001@{DOMAIN}"
+        # a new delegated token, minted by the replica that never saw the session
+        assert ns.jwt_requests == [{"user": "1001", "domain": DOMAIN}] * 2
+        assert fresh.refresh_token is not None
+
+    def test_a_refresh_token_of_another_key_is_refused(self, monkeypatch, adapter):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            make_adapter(monkeypatch, secret_key_base="another-key").refresh_session(session.refresh_token.root)
+        assert (error.value.status_code, error.value.code) == (401, "refresh_token_invalid")
+
+    def test_the_netsapiens_refresh_token_is_not_a_refresh_token_here(self, adapter):
+        # NetSapiens' own refresh token cannot be checked without an OAuth client
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.refresh_session(ns_token("1001", "refresh"))
+        assert error.value.code == "refresh_token_invalid"
+
+    def test_an_expired_refresh_token(self, monkeypatch, ns):
+        monkeypatch.setenv("SESSIONS_REFRESH_EXPIRATION", "0")
+        subject = make_adapter(monkeypatch)
+        session = subject.autoprovision_session(sso_token())
+        time.sleep(1)
+        with pytest.raises(WebTritErrorException) as error:
+            subject.refresh_session(session.refresh_token.root)
+        assert error.value.code == "refresh_token_expired"
+
+    def test_a_user_gone_from_netsapiens_is_not_refreshed(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        ns.refused_users.add("1001")
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.refresh_session(session.refresh_token.root)
+        assert (error.value.status_code, error.value.code) == (401, "refresh_token_invalid")
+
+    def test_without_secret_key_base_there_is_no_refresh(self, monkeypatch, ns):
+        subject = make_adapter(monkeypatch, secret_key_base=None)
+        session = subject.autoprovision_session(sso_token())
+        assert session.refresh_token is None
+        with pytest.raises(WebTritErrorException) as error:
+            subject.refresh_session("anything")
+        assert error.value.status_code == 401
+
+    def test_sign_out(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        assert adapter.close_session(session.access_token.root) is True
+        # the next request asks NetSapiens again
+        adapter.validate_session(session.access_token.root)
+        assert ns.whoami == [session.access_token.root]
 
 
 class TestUser:

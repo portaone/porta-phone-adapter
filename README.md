@@ -244,7 +244,8 @@ with that domain's API key. Users are `<extension>@<domain>`.
 |---|---|---|---|
 | `NETSAPIENS_CLIENTS` | yes¹ | — | JSON list, one entry per domain: `domain`, `api_server` (e.g. `https://ns-api.com`), `api_key`, `device_filter`, `default_sip_outbound_proxy`, `default_sip_port`; `client_id` / `client_secret` only for the password sign-in |
 | `NETSAPIENS_CLIENTS_FIRESTORE` | yes¹ | — | Firestore collection holding the same entries, instead of `NETSAPIENS_CLIENTS` |
-| `NETSAPIENS_TOKEN_STORAGE` | no | `firestore` | Where the per-user NetSapiens tokens are kept: `firestore`, or `memory` (one replica, or a lab without Google Cloud; a lost token is minted again from the API key) |
+| `SECRET_KEY_BASE` | yes | — | Signs the refresh tokens of the sessions. Without it a session ends when its NetSapiens token expires (4 hours), and changing it signs everyone out at their next refresh |
+| `SESSIONS_REFRESH_EXPIRATION` | no | `8760` | Hours a refresh token stays valid; each refresh issues a new one |
 | `NETSAPIENS_SSO_SECRET` | no | — | Shared HS256 key of the customer's SaaS. When set, users sign in with a token the SaaS signs (`autoProvision`) |
 | `NETSAPIENS_SSO_ISSUER` | no | — | Expected `iss` of the SaaS tokens; not checked when empty |
 | `NETSAPIENS_SSO_AUDIENCE` | no | `portadialer` | Expected `aud` of the SaaS tokens |
@@ -265,6 +266,17 @@ unique `jti`; each `jti` is accepted once. It comes as `config_token` of
 the sign-up request (embedded sign-in page of the mobile app). After that the adapter
 acts for the user with a delegated token (`POST /ns-api/v2/jwt`, with the domain API key),
 so the user's NetSapiens password is never needed.
+
+**Sessions** keep no state in the adapter, as with PortaSwitch, so the adapter restarts
+and runs as several replicas without signing anyone out, and needs no Firestore. The
+access token Core gets is the user's NetSapiens token (from the password sign-in or a
+delegated one). On each request NetSapiens says whose token it is
+(`GET /ns-api/v2/domains/~/users/~`), and the answer is cached for two minutes; the
+token's own claims are only used to pick the API server and to see that it expired.
+NetSapiens refreshes a token only with an OAuth client, and a delegated one not at all, so
+the refresh token is signed by the adapter (`SECRET_KEY_BASE`): a refresh mints a new
+delegated token with the domain API key, which NetSapiens refuses for a user who no longer
+exists. Signing out forgets the token in the adapter; NetSapiens ends it at its expiry.
 
 **API key.** One per domain. Office Manager scope limited to the domain is enough, with
 the models `device, subscriber, contact, cdr, cdr2, voicemail, audio, recording,
