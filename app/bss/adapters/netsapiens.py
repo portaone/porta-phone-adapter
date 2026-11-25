@@ -1,8 +1,12 @@
+import hashlib
+import hmac
 import logging
 import math
 import re
 import shutil
 import subprocess
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from json import JSONDecodeError, loads as load_json
@@ -16,7 +20,6 @@ from app_config import AppConfig
 from bss.adapters import BSSAdapter
 from bss.dbs.firestore import FirestoreKeyValue
 from bss.http_api import HTTPAPIConnectorWithLogin, OAuthSessionData, APIUser
-from bss.sessions import configure_session_storage
 from bss.types import (Capabilities, UserInfo, EndUser, ContactInfo,
                        CDRInfo, ConnectStatus, SessionInfo,
                        SIPRegistrationStatus, Direction,
@@ -28,7 +31,7 @@ from bss.types import (Capabilities, UserInfo, EndUser, ContactInfo,
 from report_error import WebTritErrorException, raise_webtrit_error
 from request_trace import sanitize_data
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 NS_API_TIMEOUT = 20
 
@@ -88,19 +91,15 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
         self.clients = {}
         if "netsapiens_clients" in kwargs:
             self.clients = kwargs.pop("netsapiens_clients")
-        self.token_storage = kwargs.pop("token_storage", "firestore")
 
         super().__init__(api_server, **kwargs)
 
     def init_token_storage(self):
-        """Storage for the per-user NetSapiens tokens: Firestore by default,
-        memory when NETSAPIENS_TOKEN_STORAGE=memory (one replica, or a lab without Google Cloud).
-        A token lost with the memory storage is minted again from the domain API key."""
+        """The per-user NetSapiens tokens are only a cache in memory: the app sends its token with
+        every request (validate_session puts it here), and a missing one is minted again from
+        the domain API key."""
         if self.SHARED_TOKENS is None:
-            if self.token_storage == "memory":
-                self.SHARED_TOKENS = {}
-            else:
-                self.SHARED_TOKENS = FirestoreKeyValue(collection_name="NetsapiensTokens")
+            self.SHARED_TOKENS = {}
         return self.SHARED_TOKENS
 
     def user_id(self, user: APIUser) -> str:
@@ -153,7 +152,7 @@ class NetsapiensAPI(HTTPAPIConnectorWithLogin):
                 else:
                     self.api_server = self.get_api_server(user_id=user.user_id)
 
-            # No stored token (a restart with the memory storage, or a session created by SSO):
+            # No token of the user in the cache (the request did not come through validate_session):
             # mint a delegated one from the domain API key instead of failing with "re-login".
             if (not turn_off_login and user.password is None and user.ns_client
                     and user.ns_client.api_key and self.get_auth_session(user) is None):
@@ -387,11 +386,22 @@ class NetsapiensAdapter(BSSAdapter):
         self.api_client = NetsapiensAPI(
             api_server="http://localhost",  # does not really matter
             netsapiens_clients=self.clients,
-            token_storage=str(config.get_conf_val("Netsapiens", "Token", "Storage",
-                                                  default="firestore")).lower(),
         )
-        # need to init the sessions since we are derived from BSSAdapter
-        self.sessions = configure_session_storage(config)
+
+        # Sessions keep no state on our side, like the PortaSwitch ones: the app's access token
+        # is the NetSapiens token itself, and its refresh token is signed by the adapter, so a
+        # restart or another replica takes them over.
+        secret = config.get_conf_val("Secret", "Key", "Base", default="")
+        self.refresh_key = hmac.new(secret.encode(), b"netsapiens-refresh-token",
+                                    hashlib.sha256).digest() if secret else None
+        if not self.refresh_key:
+            logging.warning("SECRET_KEY_BASE is not set: sessions cannot be refreshed, "
+                            "users will sign in again when their NetSapiens token expires")
+        self.refresh_ttl = int(config.get_conf_val("Sessions", "Refresh", "Expiration",
+                                                   default=24 * 365)) * 3600
+        # token -> (user_id, cached until): NetSapiens already confirmed whose token it is
+        self._checked_tokens = {}
+        self._checked_lock = threading.Lock()
 
         # sign-in with a token signed by the customer's SaaS (deeplink, QR, web widget, embedded page)
         self.sso_secret = config.get_conf_val("Netsapiens", "SSO", "Secret", default="")
@@ -535,11 +545,8 @@ class NetsapiensAdapter(BSSAdapter):
             ns_client=client
         ))
         if token_data:
-            # everything is in order, create a session
             user.user_id = user.login
-            session = self.sessions.create_session(user)
-            self.sessions.store_session(session)
-            return session
+            return self._make_session(user.login, token_data)
 
         # something is wrong. your code should return a more descriptive
         # error message to simplify the process of fixing the problem
@@ -575,10 +582,142 @@ class NetsapiensAdapter(BSSAdapter):
     def _session_for(self, user_id: str) -> SessionInfo:
         """A session for a user the customer's SaaS vouched for: no password, a delegated NS token"""
         client = self.clients[self.split_uid(user_id)[1]]
-        self.api_client.login_delegated(NetsapiensUser(user_id=user_id, ns_client=client))
-        session = self.sessions.create_session(UserInfo(user_id=user_id, login=user_id))
-        self.sessions.store_session(session)
-        return session
+        token_data = self.api_client.login_delegated(NetsapiensUser(user_id=user_id, ns_client=client))
+        return self._make_session(user_id, token_data)
+
+    # ------------------------------------------------------------------ sessions without state
+    # How long the adapter trusts a token NetSapiens has confirmed before asking it again
+    TOKEN_CHECK_CACHE_SECONDS = 120
+    # NetSapiens is asked a little before the token runs out; Core refreshes ahead of expires_in
+    TOKEN_EXPIRY_LEEWAY = 30
+    WHOAMI_PATH = "/ns-api/v2/domains/~/users/~"
+
+    @staticmethod
+    def _claims(token: str) -> dict:
+        """Claims of a NetSapiens token, not verified: NetSapiens checks the signature itself
+        (validate_session asks it), they only say which server to ask and when the token ends"""
+        try:
+            claims = jwt.decode(token, options={"verify_signature": False})
+        except jwt.PyJWTError:
+            return {}
+        return claims if isinstance(claims, dict) else {}
+
+    def _make_session(self, user_id: str, token_data: OAuthSessionData) -> SessionInfo:
+        """The session handed to Core: the NetSapiens token as the access token, and a refresh
+        token signed by the adapter (NetSapiens refreshes only with an OAuth client, and not
+        a delegated token at all)"""
+        token = token_data.access_token
+        exp = self._claims(token).get("exp")
+        if exp:
+            expires_at = datetime.fromtimestamp(int(exp))
+        else:
+            expires_at = token_data.access_token_expires_at or datetime.now() + timedelta(hours=1)
+        expires_in = max(int((expires_at - datetime.now()).total_seconds()), 0)
+        self._remember_token(user_id, token, expires_at)
+        return SessionInfo(user_id=user_id, access_token=token,
+                           refresh_token=self._refresh_token(user_id),
+                           expires_at=expires_at, expires_in=expires_in)
+
+    def _refresh_token(self, user_id: str) -> Optional[str]:
+        if not self.refresh_key:
+            return None
+        now = int(time.time())
+        claims = {"iss": "webtrit-netsapiens-adapter", "aud": "refresh", "sub": user_id,
+                  "iat": now, "exp": now + self.refresh_ttl}
+        return jwt.encode(claims, self.refresh_key, algorithm="HS256")
+
+    def _remember_token(self, user_id: str, token: str, expires_at: datetime):
+        """Cache that NetSapiens confirmed the token, and let the API client act with it"""
+        until = min(time.time() + self.TOKEN_CHECK_CACHE_SECONDS, expires_at.timestamp())
+        with self._checked_lock:
+            now = time.time()
+            self._checked_tokens = {k: v for k, v in self._checked_tokens.items() if v[1] > now}
+            self._checked_tokens[token] = (user_id, until)
+        self.api_client.store_auth_session(
+            OAuthSessionData(access_token=token, access_token_expires_at=expires_at),
+            NetsapiensUser(user_id=user_id))
+
+    def _api_server_for(self, claims: dict) -> Optional[str]:
+        """The API server to check a token with: its domain's, or the only one configured"""
+        client = self.clients.get(claims.get("domain") or self.split_uid(claims.get("sub", ""))[1] or "")
+        if client:
+            return client.api_server
+        servers = {c.api_server for c in self.clients.values() if c.api_server}
+        return servers.pop() if len(servers) == 1 else None
+
+    def validate_session(self, access_token: str) -> SessionInfo:
+        """The access token is the user's NetSapiens token: NetSapiens says whose it is"""
+        token = str(access_token)
+        claims = self._claims(token)
+        exp = claims.get("exp")
+        if exp and int(exp) <= time.time() + self.TOKEN_EXPIRY_LEEWAY:
+            raise_webtrit_error(401, error_message="Access token expired", extra_error_code="access_token_expired")
+        if claims.get("token_type") not in (None, "access"):
+            raise_webtrit_error(401, error_message="Invalid access token", extra_error_code="access_token_invalid")
+
+        expires_at = datetime.fromtimestamp(int(exp)) if exp else datetime.now() + timedelta(hours=1)
+        cached = self._checked_tokens.get(token)
+        if cached and cached[1] > time.time():
+            return SessionInfo(user_id=cached[0], access_token=token, expires_at=expires_at)
+
+        api_server = self._api_server_for(claims)
+        if not api_server:
+            raise_webtrit_error(401, error_message="Invalid access token", extra_error_code="access_token_invalid")
+        try:
+            r = requests.get(f"{api_server.rstrip('/')}{self.WHOAMI_PATH}",
+                             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                             timeout=NS_API_TIMEOUT)
+        except requests.RequestException as e:
+            logging.warning(f"Could not check a token with NetSapiens: {e}")
+            raise_webtrit_error(500, error_message="NetSapiens is not available")
+        if r.status_code in (401, 403):
+            raise_webtrit_error(401, error_message="Invalid access token", extra_error_code="access_token_invalid")
+        if r.status_code != 200:
+            logging.warning(f"NetSapiens answered HTTP {r.status_code} on a token check")
+            raise_webtrit_error(500, error_message="NetSapiens is not available")
+        me = r.json() or {}
+        user_id = f"{me.get('user')}@{me.get('domain')}"
+        if not me.get("user") or me.get("domain") not in self.clients:
+            # a token of a domain this adapter does not serve
+            raise_webtrit_error(401, error_message="Invalid access token", extra_error_code="access_token_invalid")
+        self._remember_token(user_id, token, expires_at)
+        return SessionInfo(user_id=user_id, access_token=token, expires_at=expires_at)
+
+    def refresh_session(self, refresh_token: str) -> SessionInfo:
+        """A new NetSapiens token for the user the adapter's refresh token names. NetSapiens
+        refuses it for a user who no longer exists."""
+        if not self.refresh_key:
+            raise_webtrit_error(401, error_message="Sessions cannot be refreshed",
+                                extra_error_code="refresh_token_invalid")
+        try:
+            claims = jwt.decode(str(refresh_token), self.refresh_key, algorithms=["HS256"],
+                                audience="refresh", issuer="webtrit-netsapiens-adapter")
+        except jwt.ExpiredSignatureError:
+            raise_webtrit_error(401, error_message="Refresh token expired", extra_error_code="refresh_token_expired")
+        except jwt.PyJWTError:
+            raise_webtrit_error(401, error_message="Invalid refresh token", extra_error_code="refresh_token_invalid")
+        user_id = claims.get("sub", "")
+        client = self.clients.get(self.split_uid(user_id)[1] or "")
+        if not client:
+            raise_webtrit_error(401, error_message="Invalid refresh token", extra_error_code="refresh_token_invalid")
+        try:
+            token_data = self.api_client.login_delegated(NetsapiensUser(user_id=user_id, ns_client=client))
+        except WebTritErrorException:
+            raise_webtrit_error(401, error_message=f"NetSapiens refused a token for {user_id}",
+                                extra_error_code="refresh_token_invalid")
+        return self._make_session(user_id, token_data)
+
+    def close_session(self, access_token: str) -> bool:
+        """Nothing is stored to remove: forget the token here, NetSapiens ends it at its expiry"""
+        token = str(access_token)
+        with self._checked_lock:
+            cached = self._checked_tokens.pop(token, None)
+        if cached:
+            user = NetsapiensUser(user_id=cached[0])
+            stored = self.api_client.get_auth_session(user)
+            if stored and stored.access_token == token:
+                self.api_client.delete_auth_session(user)
+        return True
 
     def autoprovision_session(self, config_token: str, tenant_id: str = None) -> SessionInfo:
         """Deeplink, QR code and the web dialer widget: config_token is the SaaS-signed token"""
