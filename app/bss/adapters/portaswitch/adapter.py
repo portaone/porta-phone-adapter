@@ -240,6 +240,12 @@ OFFICE_HIERARCHY_CACHE_TTL: Final[int] = 600
 #: int: Upper bound on each office hierarchy cache (one entry per customer asked about).
 OFFICE_HIERARCHY_CACHE_MAX: Final[int] = 10_000
 
+#: int: Seconds after the last contacts request from anybody in a group of offices (a
+#: hierarchy, or one customer) that the group stops being kept warm (WT-2117). Longer than
+#: the apps' slowest contacts poll, 30 minutes with hybrid presence, so that such a poll
+#: still finds the list readable without a read of the switch.
+CONTACTS_GROUP_IDLE_TIMEOUT: Final[int] = 3600
+
 #: int: AccountInfo.billing_model of a beneficiary account, one that has a sponsor.
 #: PortaBilling fills i_master_account for it too - with the sponsor, not a master
 #: as for an alias (billing_model 2) - so the two must not be confused (WT-2209).
@@ -497,9 +503,15 @@ class PortaSwitchAdapter(BSSAdapter):
         self._accounts_cache: Dict[int, tuple] = {}
         # One lock per customer, so a burst of contacts requests costs one read.
         self._accounts_cache_locks: Dict[int, asyncio.Lock] = {}
-        # In-flight background refreshes, kept referenced: the event loop only
-        # holds a weak reference to a task.
+        # In-flight background refreshes, one per group of offices (WT-2117), kept
+        # referenced: the event loop only holds a weak reference to a task.
         self._accounts_refresh_tasks: Dict[int, asyncio.Task] = {}
+        # Groups of offices kept warm (WT-2117), keyed by the main office (the customer
+        # itself outside a hierarchy): its offices, when anybody in it last asked for
+        # contacts, and the task that keeps it warm.
+        self._contacts_groups: Dict[int, List[int]] = {}
+        self._contacts_group_last_used: Dict[int, float] = {}
+        self._contacts_group_warm_tasks: Dict[int, asyncio.Task] = {}
         # Office hierarchies (WT-2117): i_customer -> (monotonic ts, its main office or
         # None), main office -> (monotonic ts, its offices); one lock per key.
         self._office_main_cache: Dict[int, tuple] = {}
@@ -1113,9 +1125,7 @@ class PortaSwitchAdapter(BSSAdapter):
                         type.value for type in
                         self._portaswitch_settings.CONTACTS_SELECTING_EXTENSION_TYPES
                     }
-                    accounts_per_customer = await _gather_limited(
-                        [self._get_all_accounts_by_customer(c) for c in all_i_customers]
-                    )
+                    accounts_per_customer = await self._get_group_accounts(main_i_customer, all_i_customers)
                     accounts = [acc for accs in accounts_per_customer for acc in accs]
                     account_to_aliases = {account["i_account"]: account.get("alias_list", []) for account in accounts}
                     extensions = (await self._admin_api.get_extensions_list(
@@ -1128,9 +1138,7 @@ class PortaSwitchAdapter(BSSAdapter):
                             contacts.append(Serializer.get_contact_info_by_extension(ext, aliases, i_account))
                 case PortaSwitchContactsSelectingMode.ACCOUNTS:
                     # Fetch accounts from all offices in the hierarchy
-                    accounts_per_customer = await _gather_limited(
-                        [self._get_all_accounts_by_customer(c) for c in all_i_customers]
-                    )
+                    accounts_per_customer = await self._get_group_accounts(main_i_customer, all_i_customers)
                     accounts = [acc for accs in accounts_per_customer for acc in accs]
 
                     # When filtering by extension and in a hierarchy, use the unified extensions list
@@ -1717,9 +1725,7 @@ class PortaSwitchAdapter(BSSAdapter):
                         # the two made consecutive pages overlap by a margin that grew with the
                         # page number. For a customer outside an office hierarchy
                         # all_i_customers == [main_i_customer], so this is a single fan-out.
-                        accounts_per_customer = await _gather_limited(
-                            [self._get_all_accounts_by_customer(c) for c in all_i_customers]
-                        )
+                        accounts_per_customer = await self._get_group_accounts(main_i_customer, all_i_customers)
                         # Order deterministically: get_account_list is never sent an ORDER BY,
                         # so the row order of separate calls — the parallel chunks here, and the
                         # next page's own request — is unspecified. Sorting on i_account makes
@@ -3496,26 +3502,145 @@ class PortaSwitchAdapter(BSSAdapter):
 
         Search results are never cached: they are already bounded to the page
         being asked for, and their key space (field x pattern) is unbounded.
+
+        A customer read this way is a group of one office; the contacts paths read
+        a whole hierarchy through _get_group_accounts.
         """
         ttl = self._portaswitch_settings.CONTACTS_CACHE_TTL
         if ttl <= 0 or search_params:
             return await self._fetch_accounts_by_customer(i_customer, **search_params)
+        return (await self._get_group_accounts(i_customer, [i_customer]))[0]
 
-        entry = self._accounts_cache.get(i_customer)
-        if entry is not None:
-            age = time.monotonic() - entry[0]
-            if age < ttl:
-                _record_cache_event("hit")
-                return entry[1]
-            if age < ttl * ACCOUNTS_CACHE_STALE_FACTOR:
-                # Hand back what we have and re-read behind the request: making a
-                # burst of clients wait on one slow read of the whole list is how
-                # the deadline cancellations of WT-1922 got started.
-                _record_cache_event("stale")
-                self._schedule_accounts_refresh(i_customer)
-                return entry[1]
+    async def _get_group_accounts(self, group: int, offices: List[int]) -> list[list[dict]]:
+        """The account lists of a group of offices, one per office in the order of `offices`.
 
-        return await self._read_accounts_into_cache(i_customer)
+        A group is an office hierarchy, keyed by its main office, or one customer outside
+        a hierarchy, keyed by itself (WT-2117). Every office keeps its own cache entry;
+        what is per group is how the entries are refreshed:
+
+        - a fresh entry is served; a stale one is served too, and all the stale offices
+          of the request are re-read behind it by one task, FANOUT_LIMIT at a time. One
+          task per office started them all at once, hundreds for a large hierarchy,
+          bounded only by the connection pool's admission limit;
+        - only an office with no entry, or one past the stale window, is read inside
+          the request, as before;
+        - the group is kept warm while anybody in it asks for contacts
+          (_keep_group_warm), so that a request finds its entries servable instead of
+          waiting for a read of every office.
+
+        Without the cache (CONTACTS_CACHE_TTL=0) every office is read, as before.
+        """
+        ttl = self._portaswitch_settings.CONTACTS_CACHE_TTL
+        if ttl <= 0:
+            return await _gather_limited([self._fetch_accounts_by_customer(c) for c in offices])
+
+        self._note_group_use(group, offices)
+        stale: List[int] = []
+
+        async def _one(i_customer: int) -> list[dict]:
+            entry = self._accounts_cache.get(i_customer)
+            if entry is not None:
+                age = time.monotonic() - entry[0]
+                if age < ttl:
+                    _record_cache_event("hit")
+                    return entry[1]
+                if age < ttl * ACCOUNTS_CACHE_STALE_FACTOR:
+                    # Hand back what we have and re-read behind the request: making a
+                    # burst of clients wait on one slow read of the whole list is how
+                    # the deadline cancellations of WT-1922 got started.
+                    _record_cache_event("stale")
+                    stale.append(i_customer)
+                    return entry[1]
+            return await self._read_accounts_into_cache(i_customer)
+
+        try:
+            return await _gather_limited([_one(c) for c in offices])
+        finally:
+            # Also when the request's deadline cancels it while it reads missing offices:
+            # the stale ones it already served still get their refresh.
+            if stale:
+                self._schedule_accounts_refresh(group, stale)
+
+    def _note_group_use(self, group: int, offices: List[int]) -> None:
+        """Record a contacts request of `group` and make sure the group is kept warm."""
+        self._contacts_groups[group] = list(offices)
+        self._contacts_group_last_used[group] = time.monotonic()
+        task = self._contacts_group_warm_tasks.get(group)
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no loop: nothing to schedule onto
+            return
+        task = loop.create_task(self._keep_group_warm(group))
+        self._contacts_group_warm_tasks[group] = task
+        task.add_done_callback(
+            lambda finished, key=group: self._forget_task(self._contacts_group_warm_tasks, key, finished)
+        )
+
+    async def _keep_group_warm(self, group: int) -> None:
+        """Re-read a group's offices before their entries leave the stale window (WT-2117).
+
+        An entry is servable up to ACCOUNTS_CACHE_STALE_FACTOR x TTL; past that the next
+        request reads the office inside itself, and for a hierarchy that is a read of
+        every office, which is what timed out at the customer of WT-2117. So while the
+        group is in use the offices are re-read once they are (factor - 1) x TTL old:
+        a group asked for often never gets there, the stale refresh of its requests
+        keeps it younger; one asked for rarely, every 30 minutes with hybrid presence,
+        costs a read of its offices every (factor - 1) x TTL, in the background,
+        FANOUT_LIMIT at a time, instead of one inside every request.
+
+        The task ends CONTACTS_GROUP_IDLE_TIMEOUT after the group's last request, or
+        when the cache is switched off. A failed office is retried a TTL later, not at
+        once.
+        """
+        while True:
+            ttl = self._portaswitch_settings.CONTACTS_CACHE_TTL
+            now = time.monotonic()
+            last_used = self._contacts_group_last_used.get(group)
+            if ttl <= 0 or last_used is None or now - last_used >= CONTACTS_GROUP_IDLE_TIMEOUT:
+                # No await since the check: a request cannot have used the group meanwhile.
+                self._contacts_groups.pop(group, None)
+                self._contacts_group_last_used.pop(group, None)
+                return
+
+            warm_age = ttl * (ACCOUNTS_CACHE_STALE_FACTOR - 1)
+            due: List[int] = []
+            wait = warm_age
+            for i_customer in self._contacts_groups.get(group, []):
+                entry = self._accounts_cache.get(i_customer)
+                if entry is None:
+                    # Kept warm means kept from expiring: an office with no entry is being
+                    # read by a request, failed its read, or was evicted, and the next
+                    # request reads it as it always has.
+                    continue
+                left = warm_age - (now - entry[0])
+                if left <= 0:
+                    due.append(i_customer)
+                else:
+                    wait = min(wait, left)
+
+            if due:
+                await self._refresh_group_now(group, due)
+                wait = ttl
+            # Wake for the idle timeout too, so that an unused group does not linger.
+            wait = min(wait, CONTACTS_GROUP_IDLE_TIMEOUT - (now - last_used))
+            await asyncio.sleep(max(wait, 1.0))
+
+    async def _refresh_group_now(self, group: int, offices: List[int]) -> None:
+        """Re-read `offices` of `group` through the group's refresh task and wait for it.
+
+        Shares the task with the stale refresh of the requests, so the two together
+        still read FANOUT_LIMIT offices at a time. A refresh already running is waited
+        for instead; offices it did not cover are found due again on the next round.
+        """
+        task = self._accounts_refresh_tasks.get(group)
+        if task is None or task.done():
+            self._schedule_accounts_refresh(group, offices)
+            task = self._accounts_refresh_tasks.get(group)
+        if task is not None:
+            # asyncio.wait, not await: cancelling the warm task must not cancel the refresh.
+            await asyncio.wait({task})
 
     async def _read_accounts_into_cache(self, i_customer: int) -> list[dict]:
         """Read one customer's accounts under a per-customer lock and cache them.
@@ -3543,53 +3668,63 @@ class PortaSwitchAdapter(BSSAdapter):
             self._store_accounts(i_customer, accounts)
             return accounts
 
-    def _schedule_accounts_refresh(self, i_customer: int) -> None:
-        """Start a background re-read of one customer's accounts, at most one.
+    def _schedule_accounts_refresh(self, group: int, offices: List[int]) -> None:
+        """Start a background re-read of a group's `offices`, at most one per group.
 
         A detached task on purpose: ``asyncio.wait_for`` in ``call_bss`` cancels
         the request's own task tree, and a task started with ``create_task`` is
         not part of it — so the refresh survives the deadline of whichever
-        request happened to trigger it.
+        request happened to trigger it. While one runs, a request finding other
+        stale offices of the group starts nothing: the next request after it does.
         """
-        task = self._accounts_refresh_tasks.get(i_customer)
+        task = self._accounts_refresh_tasks.get(group)
         if task is not None and not task.done():
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # no loop: nothing to schedule onto
             return
-        task = loop.create_task(self._refresh_accounts(i_customer))
-        self._accounts_refresh_tasks[i_customer] = task
+        task = loop.create_task(self._refresh_accounts(list(offices)))
+        self._accounts_refresh_tasks[group] = task
         task.add_done_callback(
-            lambda finished, customer=i_customer: self._forget_refresh_task(customer, finished)
+            lambda finished, key=group: self._forget_task(self._accounts_refresh_tasks, key, finished)
         )
 
-    def _forget_refresh_task(self, i_customer: int, finished: asyncio.Task) -> None:
-        """Drop a finished refresh task, but only if it is still the current one.
+    def _forget_refresh_task(self, group: int, finished: asyncio.Task) -> None:
+        """Drop a finished refresh task of `group`, see _forget_task."""
+        self._forget_task(self._accounts_refresh_tasks, group, finished)
+
+    @staticmethod
+    def _forget_task(tasks: Dict[int, asyncio.Task], key: int, finished: asyncio.Task) -> None:
+        """Drop a finished task, but only if it is still the current one.
 
         A callback on an already-finished task runs via call_soon, so another
         coroutine can schedule a replacement first; popping blindly would delete
         that replacement and drop the strong reference the loop does not hold.
         """
-        if self._accounts_refresh_tasks.get(i_customer) is finished:
-            del self._accounts_refresh_tasks[i_customer]
+        if tasks.get(key) is finished:
+            del tasks[key]
 
-    async def _refresh_accounts(self, i_customer: int) -> None:
-        """Re-read one customer's accounts in the background.
+    async def _refresh_accounts(self, offices: List[int]) -> None:
+        """Re-read the accounts of `offices` in the background, FANOUT_LIMIT at a time.
 
         Every failure keeps the existing entry: a switch hiccup must not turn a
         list we could still serve into an error for every client. Exceptions are
         swallowed here rather than left on the task, which would only surface as
         "Task exception was never retrieved".
         """
-        try:
-            await self._read_accounts_into_cache(i_customer)
-            _record_cache_event("refresh")
-        except Exception as e:
-            _record_cache_event("refresh_failed")
-            logging.warning(
-                f"Failed to refresh the cached account list for i_customer={i_customer}: {e}"
-            )
+
+        async def _one(i_customer: int) -> None:
+            try:
+                await self._read_accounts_into_cache(i_customer)
+                _record_cache_event("refresh")
+            except Exception as e:
+                _record_cache_event("refresh_failed")
+                logging.warning(
+                    f"Failed to refresh the cached account list for i_customer={i_customer}: {e}"
+                )
+
+        await _gather_limited([_one(c) for c in offices])
 
     def _store_accounts(self, i_customer: int, accounts: list[dict]) -> None:
         self._accounts_cache[i_customer] = (time.monotonic(), accounts)

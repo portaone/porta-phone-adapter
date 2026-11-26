@@ -1,17 +1,21 @@
 """Contacts of an office hierarchy (WT-2117).
 
 A customer of hundreds of one-account offices made every contacts refresh cost one
-Account/get_account_list per office. These tests pin the changes that make it cheaper
-without changing what the contacts are:
+Account/get_account_list per office. These tests pin the four changes that make it
+cheaper without changing what the contacts are:
 
 - reading a customer's accounts without `get_total` unless a page comes back full;
-- caching which offices make up a hierarchy.
+- caching which offices make up a hierarchy;
+- re-reading a group's stale offices with one task, FANOUT_LIMIT at a time;
+- keeping a group in use warm, so that a request does not read every office itself.
 """
 import asyncio
 import os
 import sys
+import time
 
 import pytest
+import pytest_asyncio
 
 _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
@@ -22,13 +26,20 @@ os.environ.setdefault('PORTASWITCH_ADMIN_API_LOGIN', 'admin')
 os.environ.setdefault('PORTASWITCH_ADMIN_API_TOKEN', 'token')
 os.environ.setdefault('PORTASWITCH_SIP_SERVER_HOST', '1.2.3.4')
 
+import bss.adapters.portaswitch.adapter as adapter_module  # noqa: E402
 from bss.adapters.portaswitch.adapter import (ACCOUNT_LIST_PAGE,  # noqa: E402
+                                              ACCOUNTS_CACHE_STALE_FACTOR,
+                                              CONTACTS_GROUP_IDLE_TIMEOUT,
+                                              FANOUT_LIMIT,
                                               OFFICE_HIERARCHY_CACHE_TTL,
                                               PortaSwitchAdapter)
 from bss.adapters.portaswitch.config import PortaSwitchSettings  # noqa: E402
 
 MAIN = 100
 BRANCHES = [101, 102, 103]
+
+# Taken before any test patches asyncio.sleep for the warm loop.
+_real_sleep = asyncio.sleep
 
 
 def account(i_account, i_customer=MAIN):
@@ -105,6 +116,20 @@ def age_entries(adapter, seconds):
 def hierarchy_api(**kwargs):
     office_type = {MAIN: 3, **{b: 2 for b in BRANCHES}}
     return FakeAdminAPI({}, branches=BRANCHES, office_type=office_type, **kwargs)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def stop_warm_tasks():
+    """The warm task of a group outlives the request on purpose; a test must not leave
+    it to be destroyed with the loop."""
+    yield
+    pending = [
+        task for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and "_keep_group_warm" in repr(task.get_coro())
+    ]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
 
 
 # --- reading a customer without get_total ------------------------------------
@@ -309,3 +334,173 @@ async def test_a_burst_reads_the_hierarchy_once():
 
     assert api.customer_info_calls == [101]
     assert api.customer_list_calls == [MAIN]
+
+
+# --- refreshing a group of offices ---------------------------------------------
+
+def many_offices(count):
+    return {office: [account(office * 10, office)] for office in range(1000, 1000 + count)}
+
+
+@pytest.mark.asyncio
+async def test_without_the_cache_every_office_is_read_every_time():
+    offices = many_offices(5)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(0, api)
+
+    for _ in range(2):
+        await adapter._get_group_accounts(1000, list(offices))
+
+    assert len(api.list_calls) == 10
+    assert adapter._contacts_group_warm_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_offices_are_served_at_once_and_refreshed_by_one_task():
+    offices = many_offices(50)
+    api = FakeAdminAPI(offices, delay=0.01)
+    adapter = make_adapter(60, api)
+    await adapter._get_group_accounts(1000, list(offices))
+    assert len(api.list_calls) == 50
+    age_entries(adapter, 61)
+
+    served = await adapter._get_group_accounts(1000, list(offices))
+    assert len(served) == 50
+    assert len(api.list_calls) == 50, "a stale entry is served without waiting for a read"
+    assert list(adapter._accounts_refresh_tasks) == [1000], "one refresh task for the whole group"
+
+    api.max_in_flight = 0
+    await adapter._get_group_accounts(1000, list(offices))  # while it runs: no second task
+    assert list(adapter._accounts_refresh_tasks) == [1000]
+    await asyncio.gather(*adapter._accounts_refresh_tasks.values())
+
+    assert len(api.list_calls) == 100
+    assert api.max_in_flight <= FANOUT_LIMIT, "the refresh must not start every office at once"
+
+
+@pytest.mark.asyncio
+async def test_a_hierarchy_read_goes_through_its_main_office_group():
+    api = hierarchy_api()
+    api.accounts_by_customer = {office: [account(office * 10, office)] for office in [MAIN, *BRANCHES]}
+    adapter = make_adapter(60, api)
+
+    main, offices = await adapter._get_office_customer_ids(102)
+    lists = await adapter._get_group_accounts(main, offices)
+
+    assert [rows[0]["i_customer"] for rows in lists] == [MAIN, *BRANCHES]
+    assert adapter._contacts_groups == {MAIN: [MAIN, *BRANCHES]}
+
+
+# --- keeping a group warm --------------------------------------------------------
+
+@pytest.fixture
+def fast_sleep(monkeypatch):
+    """Make the warm loop's sleeps instant and record how long it asked for."""
+    asked = []
+
+    async def sleep(seconds, *args, **kwargs):
+        asked.append(seconds)
+        await _real_sleep(0)
+
+    monkeypatch.setattr(adapter_module.asyncio, "sleep", sleep)
+    return asked
+
+
+async def settle(rounds=20):
+    for _ in range(rounds):
+        await _real_sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_group_in_use_is_re_read_before_it_leaves_the_stale_window(fast_sleep):
+    offices = many_offices(3)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(60, api)
+    await adapter._get_group_accounts(1000, list(offices))
+    assert len(api.list_calls) == 3
+
+    age_entries(adapter, 60 * (ACCOUNTS_CACHE_STALE_FACTOR - 1))
+    await settle()
+
+    assert len(api.list_calls) == 6, "the warm task re-reads the group without a request"
+    ages = [time.monotonic() - stored_at for stored_at, _ in adapter._accounts_cache.values()]
+    assert all(age < 60 for age in ages)
+
+
+@pytest.mark.asyncio
+async def test_young_entries_are_left_alone(fast_sleep):
+    offices = many_offices(3)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(60, api)
+    await adapter._get_group_accounts(1000, list(offices))
+
+    age_entries(adapter, 61)  # stale for a request, but far from the end of the window
+    await settle()
+
+    assert len(api.list_calls) == 3
+    # it sleeps until the entries reach (factor - 1) x TTL: 540 - 61 seconds from now
+    warm_age = 60 * (ACCOUNTS_CACHE_STALE_FACTOR - 1)
+    assert fast_sleep and warm_age - 62 < fast_sleep[-1] <= warm_age - 61
+
+
+@pytest.mark.asyncio
+async def test_a_group_nobody_asks_for_stops_being_kept_warm(fast_sleep):
+    offices = many_offices(3)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(60, api)
+    await adapter._get_group_accounts(1000, list(offices))
+    task = adapter._contacts_group_warm_tasks[1000]
+
+    adapter._contacts_group_last_used[1000] -= CONTACTS_GROUP_IDLE_TIMEOUT
+    age_entries(adapter, 60 * ACCOUNTS_CACHE_STALE_FACTOR)
+    await settle()
+
+    assert task.done()
+    assert len(api.list_calls) == 3, "an idle group is not read again"
+    assert 1000 not in adapter._contacts_groups
+    assert 1000 not in adapter._contacts_group_warm_tasks
+
+
+@pytest.mark.asyncio
+async def test_a_failed_warm_read_is_retried_a_ttl_later_not_at_once(fast_sleep):
+    offices = many_offices(2)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(60, api)
+    await adapter._get_group_accounts(1000, list(offices))
+
+    async def failing(i_customer, **kwargs):
+        raise RuntimeError("switch unavailable")
+
+    adapter._fetch_accounts_by_customer = failing
+    age_entries(adapter, 60 * (ACCOUNTS_CACHE_STALE_FACTOR - 1))
+    fast_sleep.clear()
+    await settle()
+
+    assert fast_sleep and fast_sleep[0] == 60, "after a failed round the next one is a TTL later"
+    assert len(adapter._accounts_cache) == 2, "the old entries are still served"
+
+
+@pytest.mark.asyncio
+async def test_an_office_with_no_entry_is_left_to_the_next_request(fast_sleep):
+    offices = many_offices(2)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(60, api)
+    await adapter._get_group_accounts(1000, list(offices))
+
+    adapter._accounts_cache.clear()
+    await settle()
+
+    assert len(api.list_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_one_warm_task_per_group():
+    offices = many_offices(2)
+    api = FakeAdminAPI(offices)
+    adapter = make_adapter(60, api)
+
+    for _ in range(5):
+        await adapter._get_group_accounts(1000, list(offices))
+    await adapter._get_group_accounts(2000, [1000])
+
+    assert sorted(adapter._contacts_group_warm_tasks) == [1000, 2000]

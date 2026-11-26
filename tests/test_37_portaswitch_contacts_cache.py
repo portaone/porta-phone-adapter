@@ -11,6 +11,7 @@ import os
 import sys
 
 import pytest
+import pytest_asyncio
 
 _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
@@ -32,6 +33,20 @@ from bss.adapters.portaswitch.adapter import (ACCOUNT_CACHE_FIELDS,  # noqa: E40
                                               _project_account)
 from bss.adapters.portaswitch.config import PortaSwitchSettings  # noqa: E402
 from bss.adapters.portaswitch.serializer import Serializer  # noqa: E402
+
+@pytest_asyncio.fixture(autouse=True)
+async def stop_warm_tasks():
+    """The warm task of a group of offices outlives the request on purpose (WT-2117); a
+    test must not leave it to be destroyed with the loop."""
+    yield
+    pending = [
+        task for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and "_keep_group_warm" in repr(task.get_coro())
+    ]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
 
 I_CUSTOMER = 100
 CURRENT_I_ACCOUNT = 5001
