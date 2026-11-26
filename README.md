@@ -297,11 +297,12 @@ straight to voicemail on NetSapiens.
 **Voicemail** stays on NetSapiens: the `new` folder is unheard, `save` is heard; marking a
 message heard moves it to `save` and cannot be undone; deleting moves it to NetSapiens'
 trash. **Call recordings** are looked up by call ID for the answered calls of a history
-page. NetSapiens stores them as GSM 6.10 WAV, which browsers cannot play; when `ffmpeg` is
-installed in the image the adapter re-encodes them to PCM WAV. A recording is not
+page. NetSapiens stores them as GSM 6.10 WAV, which browsers cannot play; the adapter
+re-encodes them to PCM WAV with `sox`, installed in the image. A recording is not
 available for a minute or two after the call. Forwarding a voicemail to a colleague makes
-Core keep an mp3 copy; NetSapiens serves only WAV, so forwarding also needs `ffmpeg`
-(without it the adapter refuses mp3 and the forward fails).
+Core keep an mp3 copy; NetSapiens serves only WAV, so the adapter makes the mp3 with `sox`
+too (without `sox` it refuses mp3 and the forward fails). A heard message cannot be made
+unheard again on NetSapiens: the adapter refuses that with 422.
 
 **Capabilities.** Besides the PBX-backed ones (history, contacts, voicemail, recordings)
 the adapter advertises the features Core provides on its own: chat

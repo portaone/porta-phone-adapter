@@ -8,6 +8,12 @@ RUN apt-get update \
  && apt-get upgrade -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
+# sox re-encodes what a PBX keeps in a codec browsers cannot play, or in a format Core asks
+# for: NetSapiens stores call recordings as GSM 6.10 WAV and voicemail as WAV only.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends sox libsox-fmt-mp3 \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN useradd -m -s /bin/bash httpd
 RUN usermod -aG root httpd
 RUN mkdir /var/db

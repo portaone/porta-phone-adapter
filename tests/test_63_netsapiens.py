@@ -470,27 +470,40 @@ class TestVoicemail:
         assert content_type == "audio/wav"
         assert b"".join(body) == b"RIFF....WAVE"
 
-    def test_mp3_needs_ffmpeg(self, adapter):
+    def test_mp3_needs_sox(self, adapter):
         # Core asks for mp3 when it keeps a copy of a forwarded message
         session = adapter.autoprovision_session(sso_token())
         with pytest.raises(WebTritErrorException) as error:
             adapter.retrieve_voicemail_message_attachment(session, "vm-1.wav", "mp3")
         assert error.value.status_code == 422
 
-    def test_mp3_is_converted_with_ffmpeg(self, adapter, monkeypatch):
+    def test_mp3_is_converted_with_sox(self, adapter, monkeypatch):
         ran = []
 
-        def ffmpeg(cmd, input=None, **kw):
+        def sox(cmd, input=None, **kw):
             ran.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, stdout=b"ID3-mp3:" + input)
 
-        monkeypatch.setattr(netsapiens.shutil, "which", lambda name: "/usr/bin/ffmpeg")
-        monkeypatch.setattr(netsapiens.subprocess, "run", ffmpeg)
+        monkeypatch.setattr(netsapiens.shutil, "which", lambda name: "/usr/bin/sox")
+        monkeypatch.setattr(netsapiens.subprocess, "run", sox)
         session = adapter.autoprovision_session(sso_token())
         content_type, body = adapter.retrieve_voicemail_message_attachment(session, "vm-1.wav", "MP3")
         assert content_type == "audio/mpeg"
         assert b"".join(body) == b"ID3-mp3:RIFF....WAVE"
-        assert "libmp3lame" in ran[0]
+        assert ran[0][0] == "sox" and ran[0][ran[0].index("-t", 3) + 1] == "mp3"
+
+    def test_a_heard_message_cannot_go_back_to_unheard(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        VOICEMAIL["save"].append({"filename": "vm-0.wav", "file-duration-seconds": 5, "file-size-kilobytes": "10 KB",
+                                  "created-datetime": "2026-11-12T10:00:00+00:00", "voicemail-from-user": "1002",
+                                  "file-access-url": "https://ns.example/audio/vm-0.wav"})
+        try:
+            with pytest.raises(WebTritErrorException) as error:
+                adapter.patch_voicemail_message(session, "vm-0.wav", UserVoicemailMessagePatch(seen=False))
+            assert (error.value.status_code, error.value.code) == (422, "unsupported_operation")
+            assert ns.moved == []
+        finally:
+            VOICEMAIL["save"].clear()
 
     def test_plain_dates_filter(self, adapter):
         session = adapter.autoprovision_session(sso_token())
