@@ -99,6 +99,7 @@ class FakeNetSapiens:
         self.auth = []
         self.moved = []
         self.whoami = []
+        self.forwarded = []
         self.refused_users = set()
         self.save_status = 202
 
@@ -137,6 +138,18 @@ class FakeNetSapiens:
                                      "file-access-url": "https://ns.example/rec/c1"})
             return FakeResponse({"code": 404}, status_code=404)
         if "/voicemails/" in path:
+            if method == "PATCH" and path.endswith("/forward"):
+                dest = (json or {}).get("voicemail-forward-new-destination")
+                if dest == "1099":
+                    return FakeResponse({"code": 507, "message": "Insufficient storage for user"}, status_code=507)
+                if dest == "1098":
+                    return FakeResponse({"code": 404, "message": "User not found"}, status_code=404)
+                if dest == "1097":
+                    return FakeResponse({"code": 403, "message": "Forbidden"}, status_code=403)
+                if "/voicemails/save/" not in path:
+                    return FakeResponse({"code": 400, "message": "Source file not valid"}, status_code=400)
+                self.forwarded.append((path, dest))
+                return FakeResponse({"code": 202}, status_code=202)
             if method == "PATCH" and path.endswith("/save"):
                 if self.save_status >= 400:
                     return FakeResponse({"code": self.save_status}, status_code=self.save_status)
@@ -226,6 +239,8 @@ class TestCapabilities:
         assert Capabilities.sip_dialogs not in caps
         # the message waiting subscription goes with the voicemail screen
         assert not {Capabilities.voicemail, Capabilities.sip_mwi} & caps
+        # and so does the forward, down to how it is carried out
+        assert not {Capabilities.voicemail_forward, Capabilities.voicemail_forward_adaptee} & caps
 
 
 class TestPasswordSignIn:
@@ -541,6 +556,51 @@ class TestVoicemail:
         session = adapter.autoprovision_session(sso_token())
         with pytest.raises(WebTritErrorException) as error:
             adapter.patch_voicemail_message(session, "vm-1.wav", UserVoicemailMessagePatch(seen=True))
+        assert (error.value.status_code, error.value.code) == (500, "external_api_issue")
+        assert "HTTP 403" in error.value.error_message
+
+    def test_forward_is_advertised_as_netsapiens_own(self, adapter):
+        caps = set(adapter.get_capabilities())
+        assert {Capabilities.voicemail_forward, Capabilities.voicemail_forward_adaptee} <= caps
+
+    def test_an_unheard_message_is_saved_then_forwarded(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        adapter.forward_voicemail_message(session, "vm-1.wav", f"1002@{DOMAIN}")
+        assert ns.moved == [f"/domains/{DOMAIN}/users/1001/voicemails/new/vm-1.wav/save"]
+        assert ns.forwarded == [(f"/domains/{DOMAIN}/users/1001/voicemails/save/vm-1.wav/forward", "1002")]
+
+    def test_a_recipient_of_another_domain_is_not_found(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", "1002@other.example")
+        assert (error.value.status_code, error.value.code) == (404, "recipient_not_found")
+        assert ns.forwarded == [] and ns.moved == []
+
+    def test_a_mailbox_that_cannot_take_it(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", f"1099@{DOMAIN}")
+        assert (error.value.status_code, error.value.code) == (422, "recipient_mailbox_full")
+
+    def test_a_recipient_netsapiens_does_not_know_is_not_found(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", f"1098@{DOMAIN}")
+        assert (error.value.status_code, error.value.code) == (404, "recipient_not_found")
+
+    def test_a_save_that_fails_is_reported_and_nothing_is_forwarded(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        ns.save_status = 500
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", f"1002@{DOMAIN}")
+        assert (error.value.status_code, error.value.code) == (500, "external_api_issue")
+        assert "save" in error.value.error_message
+        assert ns.forwarded == []
+
+    def test_a_forward_netsapiens_refuses_is_not_the_users_refusal(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", f"1097@{DOMAIN}")
         assert (error.value.status_code, error.value.code) == (500, "external_api_issue")
         assert "HTTP 403" in error.value.error_message
 

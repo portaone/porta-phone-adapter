@@ -120,6 +120,12 @@ from bss.types import (
     UserVoicemailMessageDeleteUnauthorizedErrorResponse,
     UserVoicemailMessageDeleteNotFoundErrorResponse,
     UserVoicemailMessageDeleteInternalServerErrorResponse,
+    UserVoicemailMessageForwardRequest,
+    UserVoicemailMessageForwardNotFoundErrorResponse,
+    UserVoicemailMessageForwardUnprocessableEntityErrorResponse,
+    UserVoicemailMessageForwardUnauthorizedErrorResponse,
+    UserVoicemailMessageForwardInternalServerErrorResponse,
+    UserVoicemailMessageForwardNotImplementedErrorResponse,
 
     # call center ("My Queues")
     CallQueue,
@@ -1237,6 +1243,46 @@ async def delete_user_voicemail_message(
 
     is_method_allowed(Capabilities.voicemail)
     await call_bss(bss.delete_voicemail_message, session, message_id)
+
+    return Response(status_code=204)
+
+
+@router.post(
+    '/user/voicemails/{message_id}/forward',
+    response_model=None,
+    status_code=204,
+    responses={
+        '401': {'model': UserVoicemailMessageForwardUnauthorizedErrorResponse},
+        '404': {'model': UserVoicemailMessageForwardNotFoundErrorResponse},
+        '422': {'model': UserVoicemailMessageForwardUnprocessableEntityErrorResponse},
+        '500': {'model': UserVoicemailMessageForwardInternalServerErrorResponse},
+        '501': {'model': UserVoicemailMessageForwardNotImplementedErrorResponse},
+    },
+    tags=['user'],
+)
+async def forward_user_voicemail_message(
+        message_id: str,
+        body: UserVoicemailMessageForwardRequest,
+        auth_data: HTTPAuthorizationCredentials = Depends(security),
+        _x_webtrit_tenant_id: Optional[str] = Header(None, alias=TENANT_ID_HTTP_HEADER),
+):
+    """
+    Pass a voicemail message on into another user's mailbox, on the PBX itself
+    (`voicemailForwardAdaptee`): the recipient gets it as a new message, on every
+    device and in the PBX's own portal. Core uses it instead of keeping a copy.
+    """
+    global bss, bss_capabilities
+
+    access_token = auth_data.credentials
+    session = await call_bss(bss.validate_session, access_token)
+
+    # The whole chain, as every other voicemail route checks voicemail itself
+    is_method_allowed(Capabilities.voicemail)
+    is_method_allowed(Capabilities.voicemail_forward)
+    is_method_allowed(Capabilities.voicemail_forward_adaptee)
+    # idempotency_key is accepted for Adaptees that can deduplicate a retry; the PBXs
+    # supported so far cannot, so Core's own record of the forward is what stops a repeat
+    await call_bss(bss.forward_voicemail_message, session, message_id, body.to_user_id)
 
     return Response(status_code=204)
 

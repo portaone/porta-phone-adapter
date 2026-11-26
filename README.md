@@ -299,10 +299,14 @@ message heard moves it to `save` and cannot be undone; deleting moves it to NetS
 trash. **Call recordings** are looked up by call ID for the answered calls of a history
 page. NetSapiens stores them as GSM 6.10 WAV, which browsers cannot play; the adapter
 re-encodes them to PCM WAV with `sox`, installed in the image. A recording is not
-available for a minute or two after the call. Forwarding a voicemail to a colleague makes
-Core keep an mp3 copy; NetSapiens serves only WAV, so the adapter makes the mp3 with `sox`
-too (without `sox` it refuses mp3 and the forward fails). A heard message cannot be made
-unheard again on NetSapiens: the adapter refuses that with 422.
+available for a minute or two after the call. Forwarding a voicemail to a colleague is
+NetSapiens' own: the adapter advertises `voicemailForwardAdaptee`, Core hands the forward to
+`POST /user/voicemails/{id}/forward`, and the message lands as a new one in the recipient's
+mailbox, on every device and in the NetSapiens portal. NetSapiens forwards only a saved
+message, so forwarding an unheard one marks it heard. Without voicemail, or with the forward
+switched off, the adaptee forward goes too. Where Core keeps its own mp3 copy instead (an
+older Core), NetSapiens serves only WAV and the adapter makes the mp3 with `sox`. A heard
+message cannot be made unheard again on NetSapiens: the adapter refuses that with 422.
 
 **Capabilities.** Besides the PBX-backed ones (history, contacts, voicemail, recordings)
 the adapter advertises the features Core provides on its own: chat

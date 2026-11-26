@@ -167,6 +167,8 @@ class BSSAdapter(SessionManagement, OTPHandler,
         Capabilities.voicemail_save: Capabilities.voicemail,
         Capabilities.voicemail_trash: Capabilities.voicemail,
         Capabilities.voicemail_forward: Capabilities.voicemail,
+        # How a forward is carried out, so only alongside the forward itself
+        Capabilities.voicemail_forward_adaptee: Capabilities.voicemail_forward,
         # A transcript is a property of a call recording, and its id comes from the
         # same call history row - with recordings off there is nothing to ask about
         # (WT-1963).
@@ -209,11 +211,14 @@ class BSSAdapter(SessionManagement, OTPHandler,
                     capabilities.remove(capability_id)
 
         enabled = set(capabilities)
-        # Drop anything whose parent capability did not survive the config.
-        enabled -= {
+        # Drop anything whose parent capability did not survive the config, until nothing
+        # changes: a dependency can have one of its own (the adaptee forward needs the
+        # forward, which needs voicemail), and one pass would keep the grandchild.
+        while dropped := {
             capability for capability, required in self.CAPABILITY_DEPENDENCIES.items()
             if capability in enabled and required not in enabled
-        }
+        }:
+            enabled -= dropped
         return list(enabled)
 
     def __init__(self, config: AppConfig):
@@ -285,6 +290,11 @@ class BSSAdapter(SessionManagement, OTPHandler,
 
     def delete_voicemail_message(self, session: SessionInfo, message_id: str) -> None:
         """Delete an existing user's voicemail message"""
+        raise NotImplementedError("Override this method in your sub-class")
+
+    def forward_voicemail_message(self, session: SessionInfo, message_id: str, to_user_id: str) -> None:
+        """Pass a voicemail message on into another user's mailbox, on the PBX itself
+        (`voicemailForwardAdaptee`)"""
         raise NotImplementedError("Override this method in your sub-class")
 
     def retrieve_call_queues(self, session: SessionInfo, user: UserInfo) -> UserCallQueuesResponse:

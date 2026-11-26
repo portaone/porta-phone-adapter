@@ -83,6 +83,10 @@ not read `voicemailTrash`, but a client only sends `DELETE ?trash=true` when it 
 advertised, so switching it off makes Delete immediate and permanent again.
 `voicemailForward` is the one Core reads: it refuses forwarding when the entry is
 absent, so switching that one off changes behaviour, not just what clients are told.
+`voicemailForwardAdaptee` says how a forward is carried out: Core hands it to the Adaptee
+(`POST /user/voicemails/{id}/forward`) instead of keeping a copy. It depends on
+`voicemailForward`, which depends on `voicemail`; the dependencies are resolved until
+nothing changes, so switching voicemail off drops all three.
 
 `directPresence` (WT-1834) is the same kind of entry as `voicemailForward`, not the same
 kind as `conference`: the feature is Core's own - presence exchanged between WebTrit apps
@@ -336,10 +340,13 @@ Checked against the NetSapiens developer sandbox (v45). Things that are easy to 
 - **Voicemail sizes are KB.** The API contract says so and Core holds the declared size
   against `VOICEMAIL_FORWARD_MAX_SIZE_KB`; bytes made every forward fail with
   `attachment_too_large`.
-- **Forwarding needs mp3 and the contact lookup.** Core copies a forwarded voicemail as
-  mp3 (re-encoded with sox here; the image installs it) and checks the recipient with
-  `GET /user/contacts/{id}` (`retrieve_contact_by_user_id`); a 501 there refuses the
-  forward.
+- **Forwarding is NetSapiens' own, and needs the contact lookup.** The adapter
+  advertises `voicemailForwardAdaptee`, so Core calls `POST /user/voicemails/{id}/forward`
+  and NetSapiens puts the message into the recipient's mailbox. NetSapiens forwards only
+  a saved message: an unheard one is saved first, so forwarding marks it heard. Core
+  checks the recipient with `GET /user/contacts/{id}` (`retrieve_contact_by_user_id`); a
+  501 there refuses the forward. A Core that keeps its own copy instead asks for mp3,
+  re-encoded with sox here (the image installs it).
 - **SIP subscriptions need a strict PBX in mind.** NetSapiens answers a SUBSCRIBE whose
   From host is not the domain with 403, and a dialog SUBSCRIBE without
   `Accept: application/dialog-info+xml` with 489. Janus now sends the registered
