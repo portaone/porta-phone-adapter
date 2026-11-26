@@ -1,9 +1,11 @@
-"""Reading a customer's accounts without `get_total` (WT-2117).
+"""Contacts of an office hierarchy (WT-2117).
 
-On MySQL `get_total=1` makes PortaBilling count the accounts of the whole installation on
-every call, and a hierarchy of hundreds of one-account offices paid that once per office.
-These tests pin that the accounts are still read whole at every size, while the count is
-asked for only after a full page.
+A customer of hundreds of one-account offices made every contacts refresh cost one
+Account/get_account_list per office. These tests pin the changes that make it cheaper
+without changing what the contacts are:
+
+- reading a customer's accounts without `get_total` unless a page comes back full;
+- caching which offices make up a hierarchy.
 """
 import asyncio
 import os
@@ -21,6 +23,7 @@ os.environ.setdefault('PORTASWITCH_ADMIN_API_TOKEN', 'token')
 os.environ.setdefault('PORTASWITCH_SIP_SERVER_HOST', '1.2.3.4')
 
 from bss.adapters.portaswitch.adapter import (ACCOUNT_LIST_PAGE,  # noqa: E402
+                                              OFFICE_HIERARCHY_CACHE_TTL,
                                               PortaSwitchAdapter)
 from bss.adapters.portaswitch.config import PortaSwitchSettings  # noqa: E402
 
@@ -97,6 +100,11 @@ def make_adapter(ttl, api):
 def age_entries(adapter, seconds):
     for office, (stored_at, rows) in list(adapter._accounts_cache.items()):
         adapter._accounts_cache[office] = (stored_at - seconds, rows)
+
+
+def hierarchy_api(**kwargs):
+    office_type = {MAIN: 3, **{b: 2 for b in BRANCHES}}
+    return FakeAdminAPI({}, branches=BRANCHES, office_type=office_type, **kwargs)
 
 
 # --- reading a customer without get_total ------------------------------------
@@ -213,3 +221,91 @@ async def test_search_parameters_reach_every_page():
     await adapter._fetch_accounts_by_customer(MAIN, firstname="%ada%")
 
     assert all(call["firstname"] == "%ada%" for call in api.list_calls)
+
+
+# --- the hierarchy cache ------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_hierarchy_is_read_once_while_the_cache_is_on():
+    api = hierarchy_api()
+    adapter = make_adapter(60, api)
+
+    for _ in range(3):
+        assert await adapter._get_office_customer_ids(101) == (MAIN, [MAIN, *BRANCHES])
+
+    assert api.customer_info_calls == [101]
+    assert api.customer_list_calls == [MAIN]
+
+
+@pytest.mark.asyncio
+async def test_branches_of_one_hierarchy_share_its_office_list():
+    api = hierarchy_api()
+    adapter = make_adapter(60, api)
+
+    for branch in BRANCHES:
+        await adapter._get_office_customer_ids(branch)
+    await adapter._get_office_customer_ids(MAIN)
+
+    assert sorted(api.customer_info_calls) == sorted([*BRANCHES, MAIN])
+    assert api.customer_list_calls == [MAIN]
+
+
+@pytest.mark.asyncio
+async def test_a_customer_outside_a_hierarchy_is_cached_too():
+    api = FakeAdminAPI({})
+    adapter = make_adapter(60, api)
+
+    for _ in range(3):
+        assert await adapter._get_office_customer_ids(7) == (7, [7])
+
+    assert api.customer_info_calls == [7]
+    assert api.customer_list_calls == []
+
+
+@pytest.mark.asyncio
+async def test_with_the_cache_off_the_hierarchy_is_read_every_time():
+    api = hierarchy_api()
+    adapter = make_adapter(0, api)
+
+    for _ in range(3):
+        await adapter._get_office_customer_ids(101)
+
+    assert api.customer_info_calls == [101] * 3
+    assert api.customer_list_calls == [MAIN] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_falls_back_as_before_and_is_not_cached():
+    api = hierarchy_api()
+    api.fail_customer_list = 1
+    adapter = make_adapter(60, api)
+
+    assert await adapter._get_office_customer_ids(101) == (MAIN, [MAIN])
+    assert await adapter._get_office_customer_ids(101) == (MAIN, [MAIN, *BRANCHES])
+    assert api.customer_list_calls == [MAIN, MAIN]
+
+
+@pytest.mark.asyncio
+async def test_the_hierarchy_is_read_again_once_it_expires():
+    api = hierarchy_api()
+    adapter = make_adapter(60, api)
+    await adapter._get_office_customer_ids(101)
+
+    for cache in (adapter._office_main_cache, adapter._office_list_cache):
+        for key, (stored_at, value) in list(cache.items()):
+            cache[key] = (stored_at - OFFICE_HIERARCHY_CACHE_TTL - 1, value)
+    await adapter._get_office_customer_ids(101)
+
+    assert api.customer_info_calls == [101, 101]
+    assert api.customer_list_calls == [MAIN, MAIN]
+
+
+@pytest.mark.asyncio
+async def test_a_burst_reads_the_hierarchy_once():
+    api = hierarchy_api()
+    adapter = make_adapter(60, api)
+
+    await asyncio.gather(*(adapter._get_office_customer_ids(101) for _ in range(20)))
+
+    assert api.customer_info_calls == [101]
+    assert api.customer_list_calls == [MAIN]

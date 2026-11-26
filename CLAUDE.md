@@ -262,8 +262,11 @@ main office. So a hierarchy is read one office at a time, and the code keeps tha
   second page would put a page of wait before them). Search keeps `get_total`: its total goes to the client. Older
   releases returned short pages while more rows existed (BA-43299, BA-43401, fixed in
   mr115-6 / mr120-1 / mr121-0), but only with filters this read does not send.
+- **The hierarchy is cached** for `OFFICE_HIERARCHY_CACHE_TTL`, only with the cache on:
+  `CONTACTS_CACHE_TTL=0` touches no cache state at all, which the tests that bypass
+  `__init__` rely on. A failed lookup is not cached.
 
-### Callers waiting are keyed by `i_c_queue`, not `huntgroup_id`
+ `i_c_queue`, not `huntgroup_id`
 
 `count_callers_waiting` keys a `queued` call of `CallControl/get_sip_calls_list` by
 `queue_info.i_c_queue` and `_build_queues` matches it to `assigned_callqueue.i_c_queue`.

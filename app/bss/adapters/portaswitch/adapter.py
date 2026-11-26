@@ -231,6 +231,15 @@ ACCOUNTS_CACHE_MAX_ROWS: Final[int] = 100_000
 #: the most the method returns (a larger limit is refused with `too_big.limit`).
 ACCOUNT_LIST_PAGE: Final[int] = 1000
 
+#: int: Seconds an office hierarchy - which customers make it up - is reused (WT-2117).
+#: Reading it costs two requests on every contacts request, and branches are added or
+#: removed rarely: a new branch shows up in the contacts this much later at most. Only
+#: with the account-list cache on.
+OFFICE_HIERARCHY_CACHE_TTL: Final[int] = 600
+
+#: int: Upper bound on each office hierarchy cache (one entry per customer asked about).
+OFFICE_HIERARCHY_CACHE_MAX: Final[int] = 10_000
+
 #: int: AccountInfo.billing_model of a beneficiary account, one that has a sponsor.
 #: PortaBilling fills i_master_account for it too - with the sponsor, not a master
 #: as for an alias (billing_model 2) - so the two must not be confused (WT-2209).
@@ -491,6 +500,11 @@ class PortaSwitchAdapter(BSSAdapter):
         # In-flight background refreshes, kept referenced: the event loop only
         # holds a weak reference to a task.
         self._accounts_refresh_tasks: Dict[int, asyncio.Task] = {}
+        # Office hierarchies (WT-2117): i_customer -> (monotonic ts, its main office or
+        # None), main office -> (monotonic ts, its offices); one lock per key.
+        self._office_main_cache: Dict[int, tuple] = {}
+        self._office_list_cache: Dict[int, tuple] = {}
+        self._office_hierarchy_locks: Dict[tuple, asyncio.Lock] = {}
 
     def _init_env_email_cache_state(self) -> None:
         """Sets up the cache of the environment's notification email (WT-1663).
@@ -3388,50 +3402,89 @@ class PortaSwitchAdapter(BSSAdapter):
                   (with get_main_office_extensions=True) to get extensions across all offices
                 - all_i_customers: list of all customer IDs (main + branches) — used to fetch
                   accounts from every office. Contains only [i_customer] when not in a hierarchy.
+
+        With the account-list cache on, both halves - the customer's main office and the
+        main office's list of offices - are reused for OFFICE_HIERARCHY_CACHE_TTL (WT-2117):
+        without that every contacts request spent two requests on them, a cache hit
+        included. A read that fails is not cached: the request falls back as it always
+        has, and the next one asks again.
         """
         try:
-            customer_info = (await self._admin_api.get_customer_info(i_customer)).get("customer_info", {})
-            i_office_type = customer_info.get("i_office_type")
-
-            if i_office_type == 2:  # branch_office: delegate to main office's hierarchy
-                i_main_office = customer_info.get("i_main_office")
-                if i_main_office:
-                    main_id = int(i_main_office)
-                    logging.debug(
-                        f"Customer {i_customer} is a branch office; resolving via main office {main_id}"
-                    )
-                    return await self._get_all_office_customers_for_main(main_id)
-            elif i_office_type == 3:  # main_office: collect main + all branches
-                logging.debug(f"Customer {i_customer} is a main office; collecting all branch customers")
-                return await self._get_all_office_customers_for_main(i_customer)
+            main_id = await self._cached_office_lookup(
+                "main", i_customer, lambda: self._read_main_office(i_customer)
+            )
         except Exception as e:
             logging.warning(f"Failed to resolve office type for i_customer={i_customer}: {e}")
+            return i_customer, [i_customer]
+        if main_id is None:
+            return i_customer, [i_customer]
 
-        return i_customer, [i_customer]
-
-    async def _get_all_office_customers_for_main(self, main_i_customer: int) -> tuple[int, list[int]]:
-        """Returns (main_i_customer, [main_i_customer] + all branch i_customers).
-
-        Parameters:
-            main_i_customer (int): The i_customer of the main office.
-
-        Returns:
-            tuple[int, list[int]]: The main office customer ID and the full list of customer IDs
-                (main + all branch offices).
-        """
         try:
-            result = await self._admin_api.get_customer_list(main_i_customer)
-            branch_ids = [
-                int(c["i_customer"])
-                for c in result.get("customer_list", [])
-                if c.get("i_customer")
-            ]
-            all_ids = [main_i_customer] + branch_ids
-            logging.debug(f"Main office {main_i_customer} has branch offices: {branch_ids}")
-            return main_i_customer, all_ids
+            offices = await self._cached_office_lookup(
+                "offices", main_id, lambda: self._read_office_list(main_id)
+            )
         except Exception as e:
-            logging.warning(f"Failed to get branch customers for main office {main_i_customer}: {e}")
-            return main_i_customer, [main_i_customer]
+            logging.warning(f"Failed to get branch customers for main office {main_id}: {e}")
+            return main_id, [main_id]
+        return main_id, list(offices)
+
+    async def _read_main_office(self, i_customer: int) -> Optional[int]:
+        """The main office of `i_customer`'s hierarchy: itself for a main office, its
+        i_main_office for a branch, None outside a hierarchy."""
+        customer_info = (await self._admin_api.get_customer_info(i_customer)).get("customer_info", {})
+        i_office_type = customer_info.get("i_office_type")
+
+        if i_office_type == BRANCH_OFFICE_TYPE:  # branch_office: delegate to main office's hierarchy
+            i_main_office = customer_info.get("i_main_office")
+            if i_main_office:
+                main_id = int(i_main_office)
+                logging.debug(f"Customer {i_customer} is a branch office; resolving via main office {main_id}")
+                return main_id
+        elif i_office_type == 3:  # main_office: collect main + all branches
+            logging.debug(f"Customer {i_customer} is a main office; collecting all branch customers")
+            return i_customer
+        return None
+
+    async def _read_office_list(self, main_i_customer: int) -> tuple[int, ...]:
+        """The main office and all its branch offices, the main office first."""
+        result = await self._admin_api.get_customer_list(main_i_customer)
+        branch_ids = [
+            int(c["i_customer"])
+            for c in result.get("customer_list", [])
+            if c.get("i_customer")
+        ]
+        logging.debug(f"Main office {main_i_customer} has branch offices: {branch_ids}")
+        return (main_i_customer, *branch_ids)
+
+    async def _cached_office_lookup(self, kind: str, key: int, read: Callable[[], Awaitable]):
+        """`read()`'s answer for `key`, reused for OFFICE_HIERARCHY_CACHE_TTL (WT-2117).
+
+        `kind` is "main" (a customer's main office) or "offices" (a main office's offices).
+        Only while the account-list cache is on: CONTACTS_CACHE_TTL=0 promises a live read
+        on every request, and that includes which offices there are - and with it off no
+        cache state is touched at all. One read at a time per key, so a burst after the
+        entry expires costs one. A failed read raises and leaves nothing behind.
+        """
+        if self._portaswitch_settings.CONTACTS_CACHE_TTL <= 0:
+            return await read()
+        cache = self._office_main_cache if kind == "main" else self._office_list_cache
+
+        def _fresh(entry) -> bool:
+            return entry is not None and time.monotonic() - entry[0] < OFFICE_HIERARCHY_CACHE_TTL
+
+        entry = cache.get(key)
+        if _fresh(entry):
+            return entry[1]
+        lock = self._office_hierarchy_locks.setdefault((kind, key), asyncio.Lock())
+        async with lock:
+            entry = cache.get(key)
+            if _fresh(entry):
+                return entry[1]
+            value = await read()
+            cache[key] = (time.monotonic(), value)
+            if len(cache) > OFFICE_HIERARCHY_CACHE_MAX:
+                del cache[min(cache, key=lambda k: cache[k][0])]
+            return value
 
     async def _get_all_accounts_by_customer(self, i_customer: int, **search_params) -> list[dict]:
         """All accounts of a customer, served from the cache when one is enabled.

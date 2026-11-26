@@ -156,7 +156,7 @@ variables without a default are mandatory — the adapter does not start without
 | `PORTASWITCH_CONTACTS_SELECTING_EXTENSION_TYPES` | no | all — `Unassigned;Account;Group` | `extensions` mode only: which extension types are listed. An unknown name is read as `Unassigned` |
 | `PORTASWITCH_CONTACTS_SELECTING_CUSTOMER_IDS` | no | empty | `phonebook` and `phone_directory` modes: `i_customer`s whose account lists are scanned to match entries to accounts. Empty, each number is looked up on its own |
 | `PORTASWITCH_CONTACTS_SKIP_WITHOUT_EXTENSION` | no | `false` | `accounts` mode only: leave out accounts that have no extension |
-| `PORTASWITCH_CONTACTS_CACHE_TTL` | no | `0` — no cache | Seconds to reuse a customer's account list for contacts before reading it again. Pick a value well above one full read (WT-1922) |
+| `PORTASWITCH_CONTACTS_CACHE_TTL` | no | `0` — no cache | Seconds to reuse a customer's account list for contacts before reading it again. Pick a value well above one full read (WT-1922). With the cache on, which offices make up a hierarchy is reused for 10 minutes (WT-2117) |
 | `PORTASWITCH_CONTACTS_CUSTOM` | no | empty | Extra contacts appended in every mode: JSON objects separated by `;`, each `{"name": "…", "number": "…"}` |
 | `PORTASWITCH_CALL_HISTORY_DEFAULT_WINDOW_HOURS` | no | `24` | See [Call history date range](#call-history-date-range-portaswitch) |
 | `PORTASWITCH_HIDE_BALANCE_IN_USER_INFO` | no | `false` | Leave the balance out of the user info |
