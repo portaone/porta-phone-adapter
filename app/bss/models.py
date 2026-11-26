@@ -664,6 +664,8 @@ class SupportedEnum(Enum):
     voicemail_save = "voicemailSave"
     voicemail_trash = "voicemailTrash"
     voicemail_forward = "voicemailForward"
+    # adding this manually
+    voicemail_forward_adaptee = "voicemailForwardAdaptee"
     session_auto_terminate = "sessionAutoTerminate"
     transcription = "transcription"
 
@@ -676,7 +678,7 @@ class SystemInfoShowResponse(BaseModel):
     name: str
     supported: List[SupportedEnum] = Field(
         ...,
-        description="A list of supported functionalities by the **Adaptee**.\n\nPossible functionalities values:\n* `signup` - supports the creation of new customer accounts\n* `otpSignin` - allows user authorization via One-Time Password (OTP)\n* `passwordSignin` - allows user authorization using login and password\n* `autoProvision` - allows user authorization using config token\n* `recordings` - provides access to call recordings\n* `callHistory` - provides access to call history\n* `extensions` - retrieves the list of other users (contacts)\n* `conference` - allows merging the calls on two or more lines into an audio conference\n* `conversationMute` - allows silencing new-message notifications of a single chat or SMS conversation\n* `voicemailSave` - allows marking a voicemail message as saved\n* `voicemailTrash` - deleting a voicemail message moves it to a trash it can be restored from\n* `voicemailForward` - allows passing a voicemail message on to another user\n* `transcription` - provides the speech-to-text transcription of a call recording\n",
+        description="A list of supported functionalities by the **Adaptee**.\n\nPossible functionalities values:\n* `signup` - supports the creation of new customer accounts\n* `otpSignin` - allows user authorization via One-Time Password (OTP)\n* `passwordSignin` - allows user authorization using login and password\n* `autoProvision` - allows user authorization using config token\n* `recordings` - provides access to call recordings\n* `callHistory` - provides access to call history\n* `extensions` - retrieves the list of other users (contacts)\n* `conference` - allows merging the calls on two or more lines into an audio conference\n* `conversationMute` - allows silencing new-message notifications of a single chat or SMS conversation\n* `voicemailSave` - allows marking a voicemail message as saved\n* `voicemailTrash` - deleting a voicemail message moves it to a trash it can be restored from\n* `voicemailForward` - allows passing a voicemail message on to another user\n* `voicemailForwardAdaptee` - the **Adaptee** passes a voicemail message on itself, into the recipient's own mailbox; with `voicemailForward` Core then hands a forward over to the **Adaptee** instead of keeping a copy\n* `transcription` - provides the speech-to-text transcription of a call recording\n",
     )
     version: str
 
@@ -1096,6 +1098,17 @@ class UserVoicemailMessagePatchNotImplementedErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,
         description="`code` field values that are defined (but can be expanded) are:\n- `functionality_not_implemented`",
+    )
+
+
+class UserVoicemailMessageForwardRequest(BaseModel):
+    to_user_id: str = Field(..., description="The user whose mailbox gets the message, as in contacts.")
+
+
+class UserVoicemailMessageForwardNotFoundErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `session_not_found`\n- `message_not_found`\n- `recipient_not_found`",
     )
 
 
