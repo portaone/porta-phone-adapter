@@ -5,6 +5,7 @@ devices carry the SIP password, contacts carry no registration state, DIDs live 
 /phonenumbers, CDR user fields are numbers, voicemail sits in the "new" / "save" folders.
 """
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -50,7 +51,8 @@ CONTACTS = [
 DOMAIN_DEVICES = [{"user": "1002", "device": "1002a", "device-sip-registration-state": "registered"},
                   {"user": "1000", "device": "1000", "device-sip-registration-state": "unregistered"}]
 PHONENUMBERS = [{"phonenumber": "14155550101", "dial-rule-translation-destination-user": "1001"},
-                {"phonenumber": "14155550102", "dial-rule-translation-destination-user": "1002"}]
+                {"phonenumber": "14155550102", "dial-rule-translation-destination-user": "1002"},
+                {"phonenumber": "14155550112", "dial-rule-translation-destination-user": "1002"}]
 CDRS = [
     # Jane called Mark, answered
     {"call-orig-call-id": "c1", "call-orig-user": 1001, "call-orig-to-user": "1002", "call-orig-request-user": 1002,
@@ -66,6 +68,24 @@ CDRS = [
     {"call-orig-call-id": "c3", "call-orig-user": 1001, "call-orig-to-user": "1002", "call-orig-request-user": 1002,
      "call-direction": 2, "call-start-datetime": "2026-11-13T11:21:39+00:00", "call-talking-duration-seconds": 0,
      "call-total-duration-seconds": 6, "call-disconnect-reason-text": "Orig: Cancel"},
+    # Mark called Jane, nobody answered and her mailbox took the call after 25 s
+    {"call-orig-call-id": "c4", "call-orig-user": 1002, "call-orig-to-user": "1001", "call-orig-request-user": 1001,
+     "call-direction": 2, "call-batch-start-datetime": "2026-11-13T10:50:00+00:00",
+     "call-start-datetime": "2026-11-13T10:50:25+00:00", "call-answer-datetime": "2026-11-13T10:50:25+00:00",
+     "call-talking-duration-seconds": 24, "call-total-duration-seconds": 24, "call-disconnect-reason-text": "Orig: Bye",
+     "call-term-to-uri": "VMail", "call-term-match-uri": f"sip:record-vmail@{DOMAIN}", "call-term-user": 1001},
+    # Jane called Mark, who transferred her to 1000: the leg after the transfer
+    {"call-orig-call-id": "c5", "call-orig-user": 1001, "call-orig-to-user": "X1000", "call-orig-request-user": 1002,
+     "call-direction": 1, "call-start-datetime": "2026-11-13T10:40:06+00:00",
+     "call-answer-datetime": "2026-11-13T10:40:06+00:00", "call-talking-duration-seconds": 21,
+     "call-total-duration-seconds": 21, "call-disconnect-reason-text": "Orig: Bye",
+     "call-term-user": 1000, "call-through-user": 1000},
+    # Mark called Jane, nobody answered and he hung up during her mailbox greeting
+    {"call-orig-call-id": "c6", "call-orig-user": 1002, "call-orig-to-user": "1001", "call-orig-request-user": 1001,
+     "call-direction": 2, "call-batch-start-datetime": "2026-11-13T10:30:00+00:00",
+     "call-start-datetime": "2026-11-13T10:30:25+00:00", "call-answer-datetime": "2026-11-13T10:30:25+00:00",
+     "call-talking-duration-seconds": 4, "call-total-duration-seconds": 4, "call-disconnect-reason-text": "Orig: Bye",
+     "call-term-to-uri": "SpeakAccount", "call-term-match-uri": "sip:nms@core1.ns.example", "call-term-user": 1001},
 ]
 VOICEMAIL = {"new": [{"filename": "vm-1.wav", "file-duration-seconds": 11, "file-size-kilobytes": "57.86 KB",
                       "created-datetime": "2026-11-13T11:51:07+00:00", "voicemail-from-user": "1002",
@@ -102,6 +122,7 @@ class FakeNetSapiens:
         self.forwarded = []
         self.refused_users = set()
         self.save_status = 202
+        self.phonenumbers_status = 200
 
     def __call__(self, method, url, timeout=None, headers=None, json=None, **kwargs):
         self.auth.append((url, (headers or {}).get("Authorization")))
@@ -129,6 +150,8 @@ class FakeNetSapiens:
         if path == f"/domains/{DOMAIN}/devices":
             return FakeResponse(DOMAIN_DEVICES)
         if path == f"/domains/{DOMAIN}/phonenumbers":
+            if self.phonenumbers_status != 200:
+                return FakeResponse({"code": self.phonenumbers_status}, status_code=self.phonenumbers_status)
             return FakeResponse(PHONENUMBERS)
         if path.endswith("/cdrs"):
             return FakeResponse(CDRS)
@@ -412,11 +435,33 @@ class TestContacts:
         assert {c.numbers.ext: c.sip_status for c in contacts} == {
             "1000": SIPRegistrationStatus.notregistered, "1002": SIPRegistrationStatus.registered}
 
+    def test_dids_are_the_numbers_of_a_contact(self, adapter):
+        # a colleague calling from their DID is found among the contacts by it
+        session = adapter.autoprovision_session(sso_token())
+        contacts = adapter.retrieve_contacts(session, UserInfo(user_id=f"1001@{DOMAIN}"))
+
+        assert {c.numbers.ext: (c.numbers.main, c.numbers.additional) for c in contacts} == {
+            "1000": ("1000", []), "1002": ("+14155550102", ["+14155550112"])}
+        items, _ = adapter.retrieve_contacts_v2(session, UserInfo(user_id=f"1001@{DOMAIN}"),
+                                                phone_numbers=["14155550112"])
+        assert [c.numbers.ext for c in items] == ["1002"]
+
+    def test_dids_that_cannot_be_read_are_logged(self, adapter, ns, caplog):
+        # a domain key without access to the phone numbers: contacts keep their extensions
+        ns.phonenumbers_status = 403
+        session = adapter.autoprovision_session(sso_token())
+        with caplog.at_level(logging.WARNING):
+            contacts = adapter.retrieve_contacts(session, UserInfo(user_id=f"1001@{DOMAIN}"))
+
+        assert {c.numbers.ext: c.numbers.main for c in contacts} == {"1000": "1000", "1002": "1002"}
+        assert "HTTP 403" in caplog.text
+
     @pytest.mark.parametrize("kwargs, expected", [
         ({"phone_numbers": ["1002"]}, ["1002"]),
         ({"search": "mark"}, ["1002"]),
         ({"search": "100"}, ["1000", "1002"]),
         ({"items_per_page": 1, "page": 2}, ["1002"]),
+        ({"phone_numbers": ["+14155550102"]}, ["1002"]),
     ])
     def test_v2_filters(self, adapter, kwargs, expected):
         session = adapter.autoprovision_session(sso_token())
@@ -442,7 +487,7 @@ class TestCallHistory:
         session = adapter.autoprovision_session(sso_token())
         items, total = adapter.retrieve_calls(session, UserInfo(user_id=f"1001@{DOMAIN}"))
 
-        assert total == 3
+        assert total == 6
         by_id = {i.call_id: i for i in items}
         assert (by_id["c1"].direction, by_id["c1"].status, by_id["c1"].duration) == (
             Direction.outgoing, ConnectStatus.accepted, 16)
@@ -450,16 +495,47 @@ class TestCallHistory:
         assert (by_id["c2"].direction, by_id["c2"].status) == (Direction.incoming, ConnectStatus.missed)
         assert (by_id["c3"].direction, by_id["c3"].status) == (Direction.outgoing, ConnectStatus.declined)
 
+    @pytest.mark.parametrize("call_id, rang_from", [
+        ("c4", "2026-11-13T10:50:00+00:00"),  # a message was left
+        ("c6", "2026-11-13T10:30:00+00:00"),  # the caller hung up during the greeting
+    ])
+    def test_a_call_her_mailbox_took_is_missed(self, adapter, call_id, rang_from):
+        session = adapter.autoprovision_session(sso_token())
+        items, _ = adapter.retrieve_calls(session, UserInfo(user_id=f"1001@{DOMAIN}"))
+        call = {i.call_id: i for i in items}[call_id]
+        assert (call.direction, call.status, call.duration) == (Direction.incoming, ConnectStatus.missed, 0)
+        # it rang from the start, not from when the mailbox picked up
+        assert call.connect_time.isoformat() == rang_from
+
+    def test_another_users_mailbox_is_not_her_missed_call(self, adapter):
+        # a CDR of Jane's that ends on someone else's mailbox (e.g. she transferred the caller there)
+        cdr = dict(next(c for c in CDRS if c["call-orig-call-id"] == "c4"), **{"call-term-user": 1000})
+        item = adapter.netsapiens_to_webtrit_cdr(cdr, me="1001")
+        assert item.status == ConnectStatus.accepted
+
+    def test_the_mailbox_of_the_called_answers_for_the_caller(self, adapter):
+        # Mark's side of the same call: he did talk to the mailbox
+        session = adapter.autoprovision_session(sso_token(sub=f"1002@{DOMAIN}"))
+        items, _ = adapter.retrieve_calls(session, UserInfo(user_id=f"1002@{DOMAIN}"))
+        c4 = {i.call_id: i for i in items}["c4"]
+        assert (c4.direction, c4.status, c4.duration) == (Direction.outgoing, ConnectStatus.accepted, 24)
+
+    def test_the_transfer_mark_is_not_part_of_the_number(self, adapter):
+        session = adapter.autoprovision_session(sso_token())
+        items, _ = adapter.retrieve_calls(session, UserInfo(user_id=f"1001@{DOMAIN}"))
+        c5 = {i.call_id: i for i in items}["c5"]
+        assert (c5.caller, c5.callee, c5.status) == ("1001", "1000", ConnectStatus.accepted)
+
     def test_newest_first_with_a_real_total(self, adapter):
         session = adapter.autoprovision_session(sso_token())
         items, total = adapter.retrieve_calls(session, UserInfo(user_id=f"1001@{DOMAIN}"), page=1, items_per_page=2)
         assert [i.call_id for i in items] == ["c2", "c1"]
-        assert total == 3
+        assert total == 6
 
     def test_recorded_calls_carry_a_recording_id(self, adapter):
         session = adapter.autoprovision_session(sso_token())
         items, _ = adapter.retrieve_calls(session, UserInfo(user_id=f"1001@{DOMAIN}"))
-        assert {i.call_id: i.recording_id for i in items} == {"c1": "c1", "c2": None, "c3": None}
+        assert {i.call_id: i.recording_id for i in items} == {"c1": "c1", "c2": None, "c3": None, "c4": None, "c5": None, "c6": None}
 
     def test_the_recording_downloads(self, adapter):
         session = adapter.autoprovision_session(sso_token())

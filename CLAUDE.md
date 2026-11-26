@@ -347,6 +347,11 @@ Checked against the NetSapiens developer sandbox (v45). Things that are easy to 
   checks the recipient with `GET /user/contacts/{id}` (`retrieve_contact_by_user_id`); a
   501 there refuses the forward. A Core that keeps its own copy instead asks for mp3,
   re-encoded with sox here (the image installs it).
+- **Contacts carry DIDs, history knows the mailbox.** DIDs are not on the users: one
+  `/phonenumbers` read per request gives every user's DIDs, put on the user and on the
+  contacts (the first as main), so a caller ID that is a colleague's DID matches a contact.
+  An incoming CDR that ends on the user's own mailbox (`VMail`, `SpeakAccount`) is a
+  missed call; the "X" before a transferred-to user is stripped from the callee.
 - **SIP subscriptions need a strict PBX in mind.** NetSapiens answers a SUBSCRIBE whose
   From host is not the domain with 403, and a dialog SUBSCRIBE without
   `Accept: application/dialog-info+xml` with 489. Janus now sends the registered

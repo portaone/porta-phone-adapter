@@ -292,7 +292,13 @@ named `1001wt` registers but never gets an incoming call. Use a one-letter
 **Numbers.** The user's main number is the first DID routed to the user in
 `/phonenumbers` (E.164), else the extension; Core finds users by it, for example for
 `/user/notifications`. A DID routed "to user" without the domain as its host goes
-straight to voicemail on NetSapiens.
+straight to voicemail on NetSapiens. Contacts carry their DIDs the same way (the first as the main
+number), so a colleague who calls from a DID is found among them; on a domain whose DIDs are
+routed that way, calling a contact's main number reaches the colleague's voicemail, while the
+extension, which contacts still carry, rings them. In the call history, an
+incoming call the user's own mailbox took (`VMail`, or `SpeakAccount` when the caller hung
+up during the greeting) is missed, timed from when it started ringing; the "X" NetSapiens
+puts in front of the user a call was transferred to is dropped from the number.
 
 **Voicemail** stays on NetSapiens: the `new` folder is unheard, `save` is heard; marking a
 message heard moves it to `save` and cannot be undone; deleting moves it to NetSapiens'
