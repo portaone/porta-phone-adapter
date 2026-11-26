@@ -5,10 +5,12 @@ by "has a DID", so the adapter drops the contacts without one before it counts a
 The fake AdminAPI below matches `%pattern%` search params the way PortaBilling does and
 serves extension rows shaped like production ones: without any DID field.
 """
+import asyncio
 import os
 import sys
 
 import pytest
+import pytest_asyncio
 
 _app_path = os.path.join(os.path.dirname(__file__), '..', 'app')
 sys.path.insert(0, _app_path)
@@ -105,6 +107,20 @@ def make_adapter(accounts, mode=PortaSwitchContactsSelectingMode.ACCOUNTS, custo
     adapter._admin_api = FakeAdminAPI(accounts)
     adapter._account_api = FakeAccountAPI()
     return adapter
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def stop_warm_tasks():
+    """The warm task of a group of offices outlives the request on purpose (WT-2117); a
+    test must not leave it to be destroyed with the loop."""
+    yield
+    pending = [
+        task for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and "_keep_group_warm" in repr(task.get_coro())
+    ]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def fetch(adapter, search=None, page=1, items_per_page=40, **kwargs):
