@@ -769,23 +769,35 @@ class NetsapiensAdapter(BSSAdapter):
         self._apply_dids(end_user, user.user_id)
         return end_user
 
-    def _apply_dids(self, end_user: EndUser, user_id: str):
-        """DIDs are not on the user: take the ones routed to this user, so Core can find the
-        user by phone number (a third-party push addresses users by number)"""
-        if not end_user.numbers:
-            return
-        uid, _ = self.split_uid(user_id)
+    def _dids_by_user(self, user_id: str) -> Dict[str, List[str]]:
+        """DIDs are not on the users: the domain's /phonenumbers routes each one to a user.
+        Read once per request and shared out, E.164 with a "+" """
         try:
             r = self._ns("GET", user_id, "/phonenumbers")
             numbers = r.json() if r.status_code == 200 else []
         except Exception as e:
-            logging.warning(f"Could not read the DIDs of {user_id}: {e}")
+            logging.warning(f"Could not read the DIDs of the domain of {user_id}: {e}")
+            return {}
+        dids: Dict[str, List[str]] = {}
+        for p in numbers if isinstance(numbers, list) else []:
+            if p.get("phonenumber") and p.get("dial-rule-translation-destination-user"):
+                dids.setdefault(str(p["dial-rule-translation-destination-user"]), []).append(f"+{p['phonenumber']}")
+        return dids
+
+    @staticmethod
+    def _set_dids(numbers: Optional[Numbers], dids: List[str]):
+        """The first DID is the main number - the one the user calls out with and is found by;
+        an extension without one keeps the extension as its main number"""
+        if numbers and dids:
+            numbers.main = dids[0]
+            numbers.additional = dids[1:]
+
+    def _apply_dids(self, end_user: EndUser, user_id: str):
+        """So Core can find the user by phone number (a third-party push addresses users by number)"""
+        if not end_user.numbers:
             return
-        dids = [f"+{p['phonenumber']}" for p in numbers or []
-                if p.get("phonenumber") and str(p.get("dial-rule-translation-destination-user")) == str(uid)]
-        if dids:
-            end_user.numbers.main = dids[0]
-            end_user.numbers.additional = dids[1:]
+        uid, _ = self.split_uid(user_id)
+        self._set_dids(end_user.numbers, self._dids_by_user(user_id).get(str(uid), []))
 
     def retrieve_contacts(self, session: SessionInfo, user: UserInfo) -> List[ContactInfo]:
         """List of other extensions in the PBX"""
@@ -797,6 +809,12 @@ class NetsapiensAdapter(BSSAdapter):
             for x in ext_list
             if x.get("uid") != user.user_id
         ]
+        # the caller ID of a call from a colleague is often their DID: without it the app
+        # cannot tell whose number it is
+        dids = self._dids_by_user(user.user_id)
+        for c in contacts:
+            if c.numbers:
+                self._set_dids(c.numbers, dids.get(str(c.numbers.ext), []))
         self._apply_registration_state(contacts, user.user_id)
         return contacts
 
@@ -1178,6 +1196,16 @@ class NetsapiensAdapter(BSSAdapter):
 
         return ConnectStatus.error
 
+    # Where NetSapiens ends a call its mailbox took: the greeting (SpeakAccount, played by the
+    # media server sip:nms@<core>) and the recording (VMail, sip:record-vmail@<domain>)
+    VOICEMAIL_TERM_TO = {"vmail", "speakaccount"}
+    VOICEMAIL_TERM_MATCH = ("sip:record-vmail@", "sip:nms@")
+
+    @classmethod
+    def _answered_by_voicemail(cls, cdr: dict) -> bool:
+        return (str(cdr.get("call-term-to-uri") or "").lower() in cls.VOICEMAIL_TERM_TO
+                or str(cdr.get("call-term-match-uri") or "").startswith(cls.VOICEMAIL_TERM_MATCH))
+
     def netsapiens_to_webtrit_cdr(self, cdr: dict, me: Optional[str] = None) -> CDRInfo:
         """Convert a NetSapiens CDR into a WebTrit one, as seen by the user `me` (extension number).
 
@@ -1196,11 +1224,24 @@ class NetsapiensAdapter(BSSAdapter):
 
         caller = str(cdr.get("call-orig-user") or cdr.get("call-orig-from-user") or cdr.get("call-orig-caller-id") or "")
         callee = str(cdr.get("call-orig-to-user") or cdr.get("call-orig-request-user") or "")
+        # NetSapiens marks the leg a call was transferred to with an "X" in front of the user
+        reached = {str(cdr.get(k)) for k in ("call-term-user", "call-through-user") if cdr.get(k)}
+        if callee[:1] == "X" and (callee[1:] in reached or callee[1:].isdigit()):
+            callee = callee[1:]
         if me is not None:
             incoming = caller != str(me)
         else:
             incoming = cdr.get("call-direction") == 1
         answered = bool(cdr.get("call-answer-datetime")) and talk > 0
+        if incoming and answered and self._answered_by_voicemail(cdr):
+            # the user's own mailbox took it: for the user it is a missed call, which rang
+            # from the start of the call, not from when the mailbox picked up
+            answered, talk = False, 0
+            try:
+                x = cdr.get("call-batch-start-datetime")
+                start = datetime.fromisoformat(x) if x else start
+            except (ValueError, TypeError):
+                pass
         reason = cdr.get("call-disconnect-reason-text") or ""
         if answered:
             status = ConnectStatus.accepted
