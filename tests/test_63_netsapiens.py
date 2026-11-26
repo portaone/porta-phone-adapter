@@ -99,6 +99,7 @@ class FakeNetSapiens:
         self.auth = []
         self.moved = []
         self.whoami = []
+        self.forwarded = []
         self.refused_users = set()
 
     def __call__(self, method, url, timeout=None, headers=None, json=None, **kwargs):
@@ -136,6 +137,14 @@ class FakeNetSapiens:
                                      "file-access-url": "https://ns.example/rec/c1"})
             return FakeResponse({"code": 404}, status_code=404)
         if "/voicemails/" in path:
+            if method == "PATCH" and path.endswith("/forward"):
+                dest = (json or {}).get("voicemail-forward-new-destination")
+                if dest == "1099":
+                    return FakeResponse({"code": 507, "message": "Insufficient storage for user"}, status_code=507)
+                if "/voicemails/save/" not in path:
+                    return FakeResponse({"code": 400, "message": "Source file not valid"}, status_code=400)
+                self.forwarded.append((path, dest))
+                return FakeResponse({"code": 202}, status_code=202)
             if method == "PATCH" and path.endswith("/save"):
                 self.moved.append(path)
                 return FakeResponse({}, status_code=202)
@@ -504,6 +513,29 @@ class TestVoicemail:
             assert ns.moved == []
         finally:
             VOICEMAIL["save"].clear()
+
+    def test_forward_is_advertised_as_netsapiens_own(self, adapter):
+        caps = set(adapter.get_capabilities())
+        assert {Capabilities.voicemail_forward, Capabilities.voicemail_forward_adaptee} <= caps
+
+    def test_an_unheard_message_is_saved_then_forwarded(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        adapter.forward_voicemail_message(session, "vm-1.wav", f"1002@{DOMAIN}")
+        assert ns.moved == [f"/domains/{DOMAIN}/users/1001/voicemails/new/vm-1.wav/save"]
+        assert ns.forwarded == [(f"/domains/{DOMAIN}/users/1001/voicemails/save/vm-1.wav/forward", "1002")]
+
+    def test_a_recipient_of_another_domain_is_not_found(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", "1002@other.example")
+        assert (error.value.status_code, error.value.code) == (404, "recipient_not_found")
+        assert ns.forwarded == [] and ns.moved == []
+
+    def test_a_mailbox_that_cannot_take_it(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.forward_voicemail_message(session, "vm-1.wav", f"1099@{DOMAIN}")
+        assert (error.value.status_code, error.value.code) == (422, "recipient_mailbox_full")
 
     def test_plain_dates_filter(self, adapter):
         session = adapter.autoprovision_session(sso_token())

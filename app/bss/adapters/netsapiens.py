@@ -449,6 +449,8 @@ class NetsapiensAdapter(BSSAdapter):
         # trash and forward are Core-side features on top of voicemail
         Capabilities.voicemail_trash,
         Capabilities.voicemail_forward,
+        # the forward itself is NetSapiens': into the recipient's mailbox, not a copy in Core
+        Capabilities.voicemail_forward_adaptee,
         # Core subscribes to the PBX over SIP: NetSapiens answers dialog and
         # message-summary subscriptions (it needs Expires above 120, Core sends 3600).
         # It refuses a presence PUBLISH, so sipPresence is left out.
@@ -1061,6 +1063,28 @@ class NetsapiensAdapter(BSSAdapter):
         r = self._ns("DELETE", user_id, f"/users/{uid}/voicemails/{m['_folder']}/{message_id}")
         if r.status_code >= 400:
             raise_webtrit_error(r.status_code, error_message=f"NetSapiens refused the delete: HTTP {r.status_code}")
+
+    def forward_voicemail_message(self, session, message_id, to_user_id) -> None:
+        """NetSapiens' own forward: the recipient gets the message as a new one in their mailbox.
+        NetSapiens forwards only a saved message ("Source file not valid" from new), so an
+        unheard one is saved first: forwarding marks it heard."""
+        user_id = self._id(session.user_id)
+        uid, domain = self.split_uid(user_id)
+        to_uid, to_domain = self.split_uid(str(to_user_id))
+        if not to_uid or to_domain != domain:
+            raise_webtrit_error(404, error_message=f"No user {to_user_id} in the domain {domain}",
+                                extra_error_code="recipient_not_found")
+        m = self._vm_find(user_id, message_id)
+        if m["_folder"] == "new":
+            self._ns("PATCH", user_id, f"/users/{uid}/voicemails/new/{message_id}/save")
+        r = self._ns("PATCH", user_id, f"/users/{uid}/voicemails/save/{message_id}/forward",
+                     json={"voicemail-forward-new-destination": to_uid})
+        if r.status_code == 507:
+            # what NetSapiens answers for a mailbox that cannot take it (and for no mailbox at all)
+            raise_webtrit_error(422, error_message=f"The mailbox of {to_user_id} cannot take the message",
+                                extra_error_code="recipient_mailbox_full")
+        if r.status_code >= 400:
+            raise_webtrit_error(r.status_code, error_message=f"NetSapiens refused the forward: HTTP {r.status_code}")
 
     # ------------------------------------------------------------------ mapping
     def netsapiens_to_webtrit_obj(self, ext: dict, produce_user_info=True,

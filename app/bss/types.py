@@ -144,6 +144,8 @@ from bss.models import (
     UserVoicemailMessagePatchNotImplementedErrorResponse as UserVoicemailMessagePatchNotImplementedErrorResponse,
     UserVoicemailMessageDeleteUnauthorizedErrorResponse as UserVoicemailMessageDeleteUnauthorizedErrorResponse,
     UserVoicemailMessageDeleteNotFoundErrorResponse as UserVoicemailMessageDeleteNotFoundErrorResponse,
+    UserVoicemailMessageForwardRequest as UserVoicemailMessageForwardRequest,
+    UserVoicemailMessageForwardNotFoundErrorResponse as UserVoicemailMessageForwardNotFoundErrorResponse,
     UserVoicemailMessageDeleteInternalServerErrorResponse as UserVoicemailMessageDeleteInternalServerErrorResponse,
 
     CallQueue as CallQueue,
