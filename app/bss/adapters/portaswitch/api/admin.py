@@ -83,17 +83,23 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
         self.store_auth_session(session, self._api_user)
         return session
 
-    async def get_account_list(self, i_customer: int, **search_params):
+    async def get_account_list(self, i_customer: int, get_total: bool = True, **search_params):
         """Returns information about accounts related to the input i_customer.
 
         Parameters:
             :i_customer (int): The identifier of a customer which accounts to be returned.
+            :get_total (bool): Ask for `total`, the number of matching accounts. On MySQL it is
+                not free: PortaBilling first counts the accounts of every environment of the
+                installation (`CountAccountsNumberPerEnv`), on every call, to pick an index for
+                the count (WT-2117). A read that pages until a short page, or looks up one
+                account, leaves it out.
             :limit (int): Maximum number of accounts to return.
             :offset (int): Number of accounts to skip.
             :**search_params: Additional search parameters (e.g., firstname, lastname, extension_name, email).
 
         Returns:
             :(dict): The API method execution result that contains info about accounts.
+                Without `get_total` it has no `total`.
 
         """
         params = {
@@ -102,9 +108,10 @@ class AdminAPI(MediaResponseMixin, AsyncHTTPAPIConnectorWithLogin):
             "get_not_closed_accounts": 1,
             "get_only_real_accounts": 1,
             "get_statuses": 1,
-            "get_total": 1,
             "limit_alias_did_number_list": 100
         }
+        if get_total:
+            params["get_total"] = 1
         params.update(search_params)
 
         return await self._send_request(

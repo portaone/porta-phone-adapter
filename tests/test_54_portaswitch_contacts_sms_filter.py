@@ -55,7 +55,7 @@ class FakeAdminAPI:
         self.accounts = accounts
         self.list_calls = []
 
-    async def get_account_list(self, i_customer, limit=None, offset=0, **search_params):
+    async def get_account_list(self, i_customer, get_total=True, limit=None, offset=0, **search_params):
         self.list_calls.append({"limit": limit, **search_params})
         assert limit is None or limit <= MAX_API_LIMIT, "PortaBilling rejects limit > 1000"
         rows = self.accounts
@@ -63,7 +63,8 @@ class FakeAdminAPI:
             needle = value.strip("%").lower()
             rows = [a for a in rows if needle in str(a.get(field, "")).lower()]
         window = rows[offset:offset + limit] if limit else rows[offset:]
-        return {"account_list": window, "total": len(rows)}
+        # Like PortaBilling: `total` only when asked for (WT-2117).
+        return {"account_list": window, **({"total": len(rows)} if get_total else {})}
 
     async def get_account_info(self, i_account=None, id=None, **kwargs):
         for account in self.accounts:

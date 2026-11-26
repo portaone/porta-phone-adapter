@@ -245,6 +245,24 @@ only when `_is_own_customer` finds its `i_customer` in `all_i_customers`; withou
 lookup exposed another customer's account, extension and SIP status. Do not drop the
 alias step to fix a leak, and do not add another one without the check.
 
+### Contacts of an office hierarchy cost a request per office (WT-2117)
+
+PortaBilling has no call for the accounts of a whole hierarchy: `get_account_list` filters
+by one `i_customer` (an unknown filter such as `i_main_office` is ignored silently and
+returns the whole environment), and `get_peers_contact_list` covers only the own and the
+main office. So a hierarchy is read one office at a time, and the code keeps that cheap:
+
+- **`get_total` only after a full page.** On MySQL `get_total=1` makes PortaBilling count
+  the accounts of every environment of the installation (`CountAccountsNumberPerEnv`) on
+  every call, so its cost grows with the installation, not with the customer asked about.
+  `_fetch_accounts_by_customer`
+  asks for the first page without it and decides by "a page shorter than the limit is the
+  last", which it always did for a short first page; a full page asks for the total once,
+  with a one-row request, and the other pages go in parallel as before (asking it with the
+  second page would put a page of wait before them). Search keeps `get_total`: its total goes to the client. Older
+  releases returned short pages while more rows existed (BA-43299, BA-43401, fixed in
+  mr115-6 / mr120-1 / mr121-0), but only with filters this read does not send.
+
 ### Callers waiting are keyed by `i_c_queue`, not `huntgroup_id`
 
 `count_callers_waiting` keys a `queued` call of `CallControl/get_sip_calls_list` by

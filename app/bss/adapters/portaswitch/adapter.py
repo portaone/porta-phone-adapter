@@ -227,6 +227,10 @@ ACCOUNTS_CACHE_STALE_FACTOR: Final[int] = 10
 #: Deliberately not configurable — the `evicted` counter says if it ever bites.
 ACCOUNTS_CACHE_MAX_ROWS: Final[int] = 100_000
 
+#: int: Rows per Account/get_account_list page when a customer's accounts are read whole:
+#: the most the method returns (a larger limit is refused with `too_big.limit`).
+ACCOUNT_LIST_PAGE: Final[int] = 1000
+
 #: int: AccountInfo.billing_model of a beneficiary account, one that has a sponsor.
 #: PortaBilling fills i_master_account for it too - with the sponsor, not a master
 #: as for an alias (billing_model 2) - so the two must not be confused (WT-2209).
@@ -1293,7 +1297,7 @@ class PortaSwitchAdapter(BSSAdapter):
                 if account.get("id") and account.get("i_customer"):
                     try:
                         enriched = (await self._admin_api.get_account_list(
-                            int(account["i_customer"]), id=account["id"]
+                            int(account["i_customer"]), get_total=False, id=account["id"]
                         )).get("account_list", [])
                         if enriched:
                             return enriched[0]
@@ -1346,7 +1350,7 @@ class PortaSwitchAdapter(BSSAdapter):
                     # 1. Search by main number
                     for cust_id in all_i_customers:
                         try:
-                            accounts = await self._admin_api.get_account_list(cust_id, id=number)
+                            accounts = await self._admin_api.get_account_list(cust_id, get_total=False, id=number)
                             for account in (accounts.get("account_list", []) or []):
                                 resolved = await _resolve_master(account)
                                 result[int(resolved["i_account"])] = resolved
@@ -3327,9 +3331,12 @@ class PortaSwitchAdapter(BSSAdapter):
                     limit = 1000
 
                     while remaining_numbers and offset < 10000:  # Safety limit to prevent infinite loops
-                        accounts = await self._admin_api.get_account_list(int(customer_id), limit=limit, offset=offset)
+                        # No total: a short page ends the walk, and the count costs a scan of
+                        # every account of the installation on MySQL (WT-2117).
+                        accounts = await self._admin_api.get_account_list(
+                            int(customer_id), get_total=False, limit=limit, offset=offset
+                        )
                         page = accounts.get("account_list", []) if isinstance(accounts, dict) else []
-                        total = accounts.get("total") if isinstance(accounts, dict) else None
 
                         # Process accounts in this batch
                         for account in page:
@@ -3340,8 +3347,6 @@ class PortaSwitchAdapter(BSSAdapter):
 
                         # Stop if we've processed all accounts or found all target numbers
                         if not remaining_numbers or len(page) < limit:
-                            break
-                        if total is not None and offset + len(page) >= int(total):
                             break
 
                         offset += limit
@@ -3476,9 +3481,11 @@ class PortaSwitchAdapter(BSSAdapter):
                 return entry[1]
 
             _record_cache_event("miss")
+            # A customer that filled a page last time reads as it always did (WT-2117).
+            expect_large = entry is not None and len(entry[1]) >= ACCOUNT_LIST_PAGE
             accounts = [
                 _project_account(account)
-                for account in await self._fetch_accounts_by_customer(i_customer)
+                for account in await self._fetch_accounts_by_customer(i_customer, expect_large=expect_large)
             ]
             self._store_accounts(i_customer, accounts)
             return accounts
@@ -3570,35 +3577,81 @@ class PortaSwitchAdapter(BSSAdapter):
                 f"with i_customer={just_stored} alone; lower CONTACTS_CACHE_TTL or the fan-out"
             )
 
-    async def _fetch_accounts_by_customer(self, i_customer: int, **search_params) -> list[dict]:
-        """Fetch all accounts for a customer using parallel pagination.
+    async def _fetch_accounts_by_customer(self, i_customer: int, expect_large: bool = False,
+                                          **search_params) -> list[dict]:
+        """Fetch all accounts for a customer, the pages after the first in parallel.
+
+        The first page is asked for without `get_total`: on MySQL that flag makes
+        PortaBilling count the accounts of the whole installation on every call
+        (WT-2117), and a page shorter than the limit already says it is the last one -
+        the rule this method has always decided by for a short first page. Only a full
+        first page asks for the total, once, with a one-row request, so that the other
+        pages can still be read in parallel. Asking it with the second page instead
+        would put a whole page of wait before the parallel ones. A customer of up to
+        1000 accounts, which is nearly every office of a hierarchy, costs one request
+        without the count.
+
+        A customer already known to fill a page (`expect_large`, from the cached list)
+        asks for the total with its first page, as it always did: the count is paid
+        anyway, and the separate request would only add a round trip before the
+        parallel pages.
 
         Parameters:
             i_customer (int): The unique identifier of the customer.
+            expect_large (bool): The customer had at least a page of accounts last time.
             **search_params: Optional search parameters forwarded to get_account_list
                 (e.g. firstname="%john%", id="%555%").
 
         Returns:
             list[dict]: List of all account records for the specified customer.
         """
-        limit = 1000
+        limit = ACCOUNT_LIST_PAGE
 
-        resp = await self._admin_api.get_account_list(i_customer, limit=limit, offset=0, **search_params)
-        first_page = resp.get("account_list", []) if isinstance(resp, dict) else []
-        total = int(resp["total"]) if isinstance(resp, dict) and resp.get("total") else None
+        def _rows(resp) -> list[dict]:
+            return resp.get("account_list", []) if isinstance(resp, dict) else []
 
-        if not first_page or len(first_page) < limit or total is None or len(first_page) >= total:
+        def _total(resp) -> Optional[int]:
+            return int(resp["total"]) if isinstance(resp, dict) and resp.get("total") is not None else None
+
+        async def _fetch_page(offset: int, get_total: bool = False):
+            return await self._admin_api.get_account_list(
+                i_customer, get_total=get_total, limit=limit, offset=offset, **search_params
+            )
+
+        first = await _fetch_page(0, get_total=expect_large)
+        first_page = _rows(first)
+        # Not `== limit`: a dual-version system appends the source system's rows to the
+        # page, so a page can be longer than the limit; that one is read on, as before.
+        if len(first_page) < limit:
             return first_page
 
-        remaining_offsets = list(range(limit, total, limit))
+        total = _total(first)
+        if total is None:
+            total = _total(await self._admin_api.get_account_list(
+                i_customer, get_total=True, limit=1, offset=0, **search_params
+            ))
+        pages = [first_page]
 
-        async def _fetch_page(offset):
-            r = await self._admin_api.get_account_list(i_customer, limit=limit, offset=offset, **search_params)
-            return r.get("account_list", []) if isinstance(r, dict) else []
-
-        # Own semaphore per call (see _gather_limited) so this nested fan-out —
-        # itself invoked concurrently across customers — can't dead-lock.
-        remaining_pages = await _gather_limited([_fetch_page(o) for o in remaining_offsets])
+        if total is not None:
+            # Own semaphore per call (see _gather_limited) so this nested fan-out —
+            # itself invoked concurrently across customers — can't dead-lock.
+            pages.extend(_rows(r) for r in await _gather_limited(
+                [_fetch_page(offset) for offset in range(limit, total, limit)]
+            ))
+        else:
+            # No total after all: read on one page at a time until a short one. A page
+            # that brings nothing new stops it too, so a switch ignoring the offset
+            # cannot keep it going.
+            seen = {int(account["i_account"]) for account in first_page}
+            offset = limit
+            while True:
+                page = _rows(await _fetch_page(offset))
+                fresh = {int(account["i_account"]) for account in page} - seen
+                pages.append(page)
+                if len(page) < limit or not fresh:
+                    break
+                seen |= fresh
+                offset += limit
 
         # De-duplicate by i_account: the chunks are separate LIMIT/OFFSET queries and
         # get_account_list is never sent an ORDER BY, so an unstable row order between
@@ -3606,7 +3659,7 @@ class PortaSwitchAdapter(BSSAdapter):
         # bounds the damage but is not a cure — a row that lands in no chunk at all
         # would still be missed; that needs a server-side ORDER BY.
         by_i_account: dict[int, dict] = {}
-        for account in first_page + [acc for page in remaining_pages for acc in page]:
+        for account in (acc for page in pages for acc in page):
             by_i_account[int(account["i_account"])] = account
 
         return list(by_i_account.values())

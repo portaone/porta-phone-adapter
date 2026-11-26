@@ -66,7 +66,7 @@ ACCOUNTS = [
 
 
 class FakeAdminAPI:
-    async def get_account_list(self, i_customer, limit=None, offset=0, **search_params):
+    async def get_account_list(self, i_customer, get_total=True, limit=None, offset=0, **search_params):
         rows = ACCOUNTS
         for field, value in search_params.items():
             needle = str(value).strip("%").lower()
@@ -74,7 +74,8 @@ class FakeAdminAPI:
         # get_only_real_accounts: PortaBilling leaves alias rows out of the list
         rows = [a for a in rows if a["billing_model"] != 2]
         window = rows[offset : offset + limit] if limit else rows[offset:]
-        return {"account_list": window, "total": len(rows)}
+        # Like PortaBilling: `total` only when asked for (WT-2117).
+        return {"account_list": window, **({"total": len(rows)} if get_total else {})}
 
     async def get_account_info(self, i_account=None, id=None, **kwargs):
         for a in ACCOUNTS:

@@ -85,7 +85,7 @@ class FakeAdminAPI:
         # every window a caller reads is ordered the opposite way from the fixture.
         return rows[::-1]
 
-    async def get_account_list(self, i_customer, limit=None, offset=0, **search_params):
+    async def get_account_list(self, i_customer, get_total=True, limit=None, offset=0, **search_params):
         self.calls.append({"i_customer": i_customer, "limit": limit, "offset": offset, **search_params})
         assert limit is None or limit <= MAX_API_LIMIT, "PortaBilling rejects limit > 1000"
         rows = self._rows(i_customer)
@@ -96,7 +96,8 @@ class FakeAdminAPI:
         # later chunk re-serves the tail of the previous one.
         start = max(0, offset - self.chunk_overlap) if offset else 0
         window = rows[start:start + limit] if limit else rows[start:]
-        return {"account_list": window, "total": len(rows)}
+        # Like PortaBilling: `total` only when asked for (WT-2117).
+        return {"account_list": window, **({"total": len(rows)} if get_total else {})}
 
     async def get_customer_info(self, i_customer):
         # i_office_type 3 == main office (has branches), 1 == standalone customer
