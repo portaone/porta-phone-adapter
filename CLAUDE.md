@@ -337,7 +337,7 @@ Checked against the NetSapiens developer sandbox (v45). Things that are easy to 
   against `VOICEMAIL_FORWARD_MAX_SIZE_KB`; bytes made every forward fail with
   `attachment_too_large`.
 - **Forwarding needs mp3 and the contact lookup.** Core copies a forwarded voicemail as
-  mp3 (re-encoded with ffmpeg here) and checks the recipient with
+  mp3 (re-encoded with sox here; the image installs it) and checks the recipient with
   `GET /user/contacts/{id}` (`retrieve_contact_by_user_id`); a 501 there refuses the
   forward.
 - **SIP subscriptions need a strict PBX in mind.** NetSapiens answers a SUBSCRIBE whose

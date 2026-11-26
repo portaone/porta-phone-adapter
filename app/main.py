@@ -115,6 +115,7 @@ from bss.types import (
     UserVoicemailMessagePatchNotFoundErrorResponse,
     UserVoicemailMessagePatchNotImplementedErrorResponse,
     UserVoicemailMessageAttachmentUnprocessableEntityErrorResponse,
+    UserVoicemailMessagePatchUnprocessableEntityErrorResponse,
     UserVoicemailMessagePatchInternalServerErrorResponse,
     UserVoicemailMessageDeleteUnauthorizedErrorResponse,
     UserVoicemailMessageDeleteNotFoundErrorResponse,
@@ -1176,6 +1177,7 @@ async def get_user_voicemail_message_details(
     responses={
         '401': {'model': UserVoicemailMessagePatchUnauthorizedErrorResponse},
         '404': {'model': UserVoicemailMessagePatchNotFoundErrorResponse},
+        '422': {'model': UserVoicemailMessagePatchUnprocessableEntityErrorResponse},
         '500': {'model': UserVoicemailMessagePatchInternalServerErrorResponse},
         '501': {'model': UserVoicemailMessagePatchNotImplementedErrorResponse},
     },
@@ -1190,6 +1192,7 @@ async def patch_user_voicemail_message(
     UserVoicemailMessagePatch,
     UserVoicemailMessagePatchUnauthorizedErrorResponse,
     UserVoicemailMessagePatchNotFoundErrorResponse,
+    UserVoicemailMessagePatchUnprocessableEntityErrorResponse,
     UserVoicemailMessagePatchInternalServerErrorResponse,
     UserVoicemailMessagePatchNotImplementedErrorResponse,
 ]:

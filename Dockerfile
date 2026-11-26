@@ -3,9 +3,12 @@ FROM python:3.11-slim AS base
 RUN mkdir /app
 WORKDIR /app
 
-# Security fixes of the Debian packages released after the base image was built.
+# Security fixes of the Debian packages released after the base image was built, and sox:
+# it re-encodes what a PBX keeps in a codec browsers cannot play, or in a format Core asks
+# for (NetSapiens stores call recordings as GSM 6.10 WAV and voicemail as WAV only).
 RUN apt-get update \
  && apt-get upgrade -y --no-install-recommends \
+ && apt-get install -y --no-install-recommends sox libsox-fmt-mp3 \
  && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -s /bin/bash httpd

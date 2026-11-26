@@ -916,7 +916,7 @@ class NetsapiensAdapter(BSSAdapter):
 
     def retrieve_call_recording(self, session: SessionInfo, recording_id) -> tuple:
         """The recording of a call, as WAV. NetSapiens keeps it as GSM 6.10, which browsers cannot
-        play, so it is re-encoded to PCM when ffmpeg is installed."""
+        play, so it is re-encoded to PCM with sox."""
         recording_id = self._id(recording_id)
         rec = self._recording(self._id(session.user_id), recording_id)
         if not rec:
@@ -928,19 +928,19 @@ class NetsapiensAdapter(BSSAdapter):
                                 extra_error_code="recording_not_found")
         return "audio/wav", iter([self._transcode(r.content, "wav") or r.content])
 
-    # ffmpeg output options per format the adapter can deliver
+    # sox output options per format the adapter can deliver: 8 kHz mono, as a phone call is
     TRANSCODE = {
-        "wav": ["-acodec", "pcm_s16le", "-ar", "8000", "-ac", "1", "-f", "wav"],
-        "mp3": ["-acodec", "libmp3lame", "-ar", "8000", "-ac", "1", "-b:a", "16k", "-f", "mp3"],
+        "wav": ["-t", "wav", "-e", "signed-integer", "-b", "16", "-r", "8000", "-c", "1"],
+        "mp3": ["-t", "mp3", "-r", "8000", "-c", "1", "-C", "16"],
     }
 
     @classmethod
     def _transcode(cls, data: bytes, file_format: str) -> Optional[bytes]:
-        """Re-encode audio with ffmpeg; None when ffmpeg is missing or fails"""
-        if not shutil.which("ffmpeg"):
+        """Re-encode a WAV (PCM or GSM 6.10) with sox; None when sox is missing or fails"""
+        if not shutil.which("sox"):
             return None
         try:
-            out = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", "pipe:0", *cls.TRANSCODE[file_format], "pipe:1"],
+            out = subprocess.run(["sox", "-q", "-t", "wav", "-", *cls.TRANSCODE[file_format], "-"],
                                  input=data, capture_output=True, timeout=30, check=True).stdout
             return out or None
         except (subprocess.SubprocessError, OSError) as e:
@@ -1021,9 +1021,9 @@ class NetsapiensAdapter(BSSAdapter):
 
     def retrieve_voicemail_message_attachment(self, session, message_id, file_format) -> tuple:
         """NetSapiens serves wav. mp3 is what Core asks for when it keeps a copy of a forwarded
-        message, so it is re-encoded with ffmpeg; without ffmpeg only wav is offered."""
+        message, so it is re-encoded with sox; without sox only wav is offered."""
         file_format = (file_format or "wav").lower()
-        if file_format not in self.TRANSCODE or (file_format != "wav" and not shutil.which("ffmpeg")):
+        if file_format not in self.TRANSCODE or (file_format != "wav" and not shutil.which("sox")):
             raise_webtrit_error(422, error_message=f"{file_format} is not available from NetSapiens",
                                 extra_error_code="unsupported_file_format")
         m = self._vm_find(self._id(session.user_id), message_id)
@@ -1044,9 +1044,28 @@ class NetsapiensAdapter(BSSAdapter):
         user_id = self._id(session.user_id)
         m = self._vm_find(user_id, message_id)
         uid, _ = self.split_uid(user_id)
-        # NetSapiens has one transition: new -> save (heard and kept); it cannot be undone
+        # NetSapiens has one transition: new -> save (heard and kept); it cannot be undone, so
+        # a request to take a heard message back to unheard is refused rather than reported done
+        if m["_folder"] == "save" and body.seen is False:
+            raise_webtrit_error(422, error_message="NetSapiens cannot mark a heard voicemail unheard again",
+                                extra_error_code="unsupported_operation")
+        if m["_folder"] == "save" and body.saved is False:
+            raise_webtrit_error(422, error_message="NetSapiens cannot move a voicemail out of its saved folder",
+                                extra_error_code="unsupported_operation")
+        if m["_folder"] == "new" and body.seen and body.saved is False:
+            raise_webtrit_error(422, error_message="NetSapiens keeps a heard voicemail in its saved folder",
+                                extra_error_code="unsupported_operation")
+        if m["_folder"] == "new" and body.saved and body.seen is False:
+            raise_webtrit_error(422, error_message="NetSapiens marks a saved voicemail heard",
+                                extra_error_code="unsupported_operation")
         if (body.seen or body.saved) and m["_folder"] == "new":
-            self._ns("PATCH", user_id, f"/users/{uid}/voicemails/new/{message_id}/save")
+            r = self._ns("PATCH", user_id, f"/users/{uid}/voicemails/new/{message_id}/save")
+            if r.status_code == 404:
+                raise_webtrit_error(404, error_message=f"NetSapiens could not save the message: HTTP {r.status_code}")
+            if r.status_code >= 400:
+                # a refusal by NetSapiens, not by this user's request
+                raise_webtrit_error(500, error_message=f"NetSapiens could not save the message: HTTP {r.status_code}",
+                                    extra_error_code="external_api_issue")
             m["_folder"] = "save"
         return UserVoicemailMessagePatch(seen=m["_folder"] != "new", saved=m["_folder"] == "save")
 

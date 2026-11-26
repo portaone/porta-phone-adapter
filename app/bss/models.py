@@ -1085,6 +1085,13 @@ class UserVoicemailMessagePatchNotFoundErrorResponse(ErrorResponse):
     )
 
 
+class UserVoicemailMessagePatchUnprocessableEntityErrorResponse(ErrorResponse):
+    code: Optional[str] = Field(
+        None,
+        description="`code` field values that are defined (but can be expanded) are:\n- `unsupported_operation`",
+    )
+
+
 class UserVoicemailMessagePatchInternalServerErrorResponse(ErrorResponse):
     code: Optional[str] = Field(
         None,

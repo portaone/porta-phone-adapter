@@ -100,6 +100,7 @@ class FakeNetSapiens:
         self.moved = []
         self.whoami = []
         self.refused_users = set()
+        self.save_status = 202
 
     def __call__(self, method, url, timeout=None, headers=None, json=None, **kwargs):
         self.auth.append((url, (headers or {}).get("Authorization")))
@@ -137,8 +138,10 @@ class FakeNetSapiens:
             return FakeResponse({"code": 404}, status_code=404)
         if "/voicemails/" in path:
             if method == "PATCH" and path.endswith("/save"):
+                if self.save_status >= 400:
+                    return FakeResponse({"code": self.save_status}, status_code=self.save_status)
                 self.moved.append(path)
-                return FakeResponse({}, status_code=202)
+                return FakeResponse({}, status_code=self.save_status)
             folder = path.rsplit("/", 1)[-1]
             return FakeResponse(VOICEMAIL.get(folder, []))
         if url.startswith("https://ns.example/"):
@@ -470,27 +473,76 @@ class TestVoicemail:
         assert content_type == "audio/wav"
         assert b"".join(body) == b"RIFF....WAVE"
 
-    def test_mp3_needs_ffmpeg(self, adapter):
+    def test_mp3_needs_sox(self, adapter):
         # Core asks for mp3 when it keeps a copy of a forwarded message
         session = adapter.autoprovision_session(sso_token())
         with pytest.raises(WebTritErrorException) as error:
             adapter.retrieve_voicemail_message_attachment(session, "vm-1.wav", "mp3")
         assert error.value.status_code == 422
 
-    def test_mp3_is_converted_with_ffmpeg(self, adapter, monkeypatch):
+    def test_mp3_is_converted_with_sox(self, adapter, monkeypatch):
         ran = []
 
-        def ffmpeg(cmd, input=None, **kw):
+        def sox(cmd, input=None, **kw):
             ran.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, stdout=b"ID3-mp3:" + input)
 
-        monkeypatch.setattr(netsapiens.shutil, "which", lambda name: "/usr/bin/ffmpeg")
-        monkeypatch.setattr(netsapiens.subprocess, "run", ffmpeg)
+        monkeypatch.setattr(netsapiens.shutil, "which", lambda name: "/usr/bin/sox")
+        monkeypatch.setattr(netsapiens.subprocess, "run", sox)
         session = adapter.autoprovision_session(sso_token())
         content_type, body = adapter.retrieve_voicemail_message_attachment(session, "vm-1.wav", "MP3")
         assert content_type == "audio/mpeg"
         assert b"".join(body) == b"ID3-mp3:RIFF....WAVE"
-        assert "libmp3lame" in ran[0]
+        assert ran[0][0] == "sox" and ran[0][ran[0].index("-t", 3) + 1] == "mp3"
+
+    def test_a_heard_message_cannot_go_back_to_unheard(self, adapter, ns):
+        session = adapter.autoprovision_session(sso_token())
+        VOICEMAIL["save"].append({"filename": "vm-0.wav", "file-duration-seconds": 5, "file-size-kilobytes": "10 KB",
+                                  "created-datetime": "2026-11-12T10:00:00+00:00", "voicemail-from-user": "1002",
+                                  "file-access-url": "https://ns.example/audio/vm-0.wav"})
+        try:
+            with pytest.raises(WebTritErrorException) as error:
+                adapter.patch_voicemail_message(session, "vm-0.wav", UserVoicemailMessagePatch(seen=False))
+            assert (error.value.status_code, error.value.code) == (422, "unsupported_operation")
+            with pytest.raises(WebTritErrorException) as error:
+                adapter.patch_voicemail_message(session, "vm-0.wav", UserVoicemailMessagePatch(saved=False))
+            assert (error.value.status_code, error.value.code) == (422, "unsupported_operation")
+            assert "saved folder" in error.value.error_message
+            assert ns.moved == []
+        finally:
+            VOICEMAIL["save"].clear()
+
+    def test_a_message_cannot_be_heard_and_left_unsaved(self, adapter, ns):
+        # NetSapiens keeps a heard message in its saved folder
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.patch_voicemail_message(session, "vm-1.wav", UserVoicemailMessagePatch(seen=True, saved=False))
+        assert (error.value.status_code, error.value.code) == (422, "unsupported_operation")
+        assert ns.moved == []
+
+    def test_a_message_cannot_be_saved_and_left_unheard(self, adapter, ns):
+        # Saving a new message is what marks it heard on NetSapiens
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.patch_voicemail_message(session, "vm-1.wav", UserVoicemailMessagePatch(seen=False, saved=True))
+        assert (error.value.status_code, error.value.code) == (422, "unsupported_operation")
+        assert ns.moved == []
+
+    def test_a_refused_save_is_reported(self, adapter, ns):
+        ns.save_status = 500
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.patch_voicemail_message(session, "vm-1.wav", UserVoicemailMessagePatch(seen=True))
+        assert (error.value.status_code, error.value.code) == (500, "external_api_issue")
+        assert ns.moved == []
+
+    def test_a_save_refused_for_the_domain_key_is_not_the_users_refusal(self, adapter, ns):
+        ns.save_status = 403
+        session = adapter.autoprovision_session(sso_token())
+        with pytest.raises(WebTritErrorException) as error:
+            adapter.patch_voicemail_message(session, "vm-1.wav", UserVoicemailMessagePatch(seen=True))
+        assert (error.value.status_code, error.value.code) == (500, "external_api_issue")
+        assert "HTTP 403" in error.value.error_message
 
     def test_plain_dates_filter(self, adapter):
         session = adapter.autoprovision_session(sso_token())
