@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2d9b7742_b454d478",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-27T20:40:13Z",
+      "side": 1,
+      "message": "LGTM.",
+      "revId": "a645ccd689fd461a0710e5137e62877ab35209b6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
