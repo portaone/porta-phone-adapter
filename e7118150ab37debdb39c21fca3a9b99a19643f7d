@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "6d162bc9_86e03dea",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 238,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-27T20:37:40Z",
+      "side": 1,
+      "message": "Please make `OFFICE_HIERARCHY_CACHE_TTL` configurable through an environment variable, like `CONTACTS_CACHE_TTL`, with a working default (e.g. 600 s) rather than off. When a branch office is added or moved, support should be able to tune how long the adapter keeps the old hierarchy instead of waiting a hardcoded 10 minutes.",
+      "revId": "e7118150ab37debdb39c21fca3a9b99a19643f7d",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
