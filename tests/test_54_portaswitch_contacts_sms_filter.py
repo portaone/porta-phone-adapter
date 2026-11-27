@@ -276,7 +276,30 @@ async def test_cached_search_matches_extension_and_alias_did():
 
 
 @pytest.mark.asyncio
-async def test_search_without_flag_keeps_field_queries_even_with_cache():
+async def test_any_search_runs_over_the_cache_with_it_on():
+    # Not only the SMS picker's: a keystroke in any search box cost five field queries per
+    # office of a hierarchy (WT-2117).
     adapter = make_adapter(directory(10, sms_every=3), cache_ttl=300)
+    items, total = await fetch(adapter, search="john")
+    assert searched_calls(adapter) == []
+    assert total == len(items) > 0
+
+
+@pytest.mark.asyncio
+async def test_search_without_the_cache_keeps_field_queries():
+    adapter = make_adapter(directory(10, sms_every=3))
     await fetch(adapter, search="john")
     assert searched_calls(adapter)
+
+
+@pytest.mark.asyncio
+async def test_a_cached_search_lists_a_number_match_before_a_name_match():
+    accounts = [
+        make_account(CURRENT_I_ACCOUNT),
+        make_account(6001, firstname="Caller 6003"),
+        make_account(6003, firstname="Ann"),
+    ]
+    adapter = make_adapter(accounts, cache_ttl=300)
+    items, _ = await fetch(adapter, search="6003")
+    in_order = [int(c.user_id.root if hasattr(c.user_id, 'root') else c.user_id) for c in items]
+    assert in_order == [6003, 6001], "the field queries list an id match first"

@@ -1352,33 +1352,66 @@ class PortaSwitchAdapter(BSSAdapter):
 
             # If phone_numbers search is provided, ignore generic `search` and use a unified implementation
             if normalized_phone_numbers:
+                found_accounts: dict[int, dict] = {}  # keyed by i_account to deduplicate
+
+                # 0. With the account cache on, a number of an account already cached for the
+                # group is answered from it, without a request (WT-2117). Only the rest - an
+                # external number, an account added since the last read, an office not read
+                # yet - is looked up on the switch below.
+                from_cache = self._cached_accounts_by_number(all_i_customers, normalized_phone_numbers)
+                for account in from_cache.values():
+                    found_accounts[int(account["i_account"])] = account
+                numbers_list = [n for n in normalized_phone_numbers if n not in from_cache]
+
                 # Build extension number → i_account index once for all customers
                 ext_number_to_i_account: dict[str, int] = {}
-                try:
-                    extensions = (await self._admin_api.get_extensions_list(
-                        main_i_customer, get_main_office_extensions=is_hierarchy
-                    ))["extensions_list"]
-                    ext_number_to_i_account = {
-                        ext["id"]: int(ext["i_account"])
-                        for ext in extensions
-                        if ext.get("id") and ext.get("i_account")
-                    }
-                except Exception as e:
-                    logging.debug(f"Failed to fetch extensions for phone_numbers lookup: {e}")
+                if numbers_list:
+                    try:
+                        extensions = (await self._admin_api.get_extensions_list(
+                            main_i_customer, get_main_office_extensions=is_hierarchy
+                        ))["extensions_list"]
+                        ext_number_to_i_account = {
+                            ext["id"]: int(ext["i_account"])
+                            for ext in extensions
+                            if ext.get("id") and ext.get("i_account")
+                        }
+                    except Exception as e:
+                        logging.debug(f"Failed to fetch extensions for phone_numbers lookup: {e}")
 
-                found_accounts: dict[int, dict] = {}  # keyed by i_account to deduplicate
+                async def _account_by_number(number: str) -> Optional[dict]:
+                    """The contact `number` belongs to - the account whose main number or alias it
+                    is, in the user's customer or hierarchy - as get_account_list returns it.
+
+                    get_account_info(id=...) finds a number on the whole switch in one request;
+                    asking get_account_list of every office for it cost one request per office,
+                    one after another: 416 for each number in a hierarchy of 416 offices
+                    (WT-2117). An alias is followed to its owner, a beneficiary stays itself
+                    (WT-2209), and the owner must be of the user's customer or hierarchy
+                    (WT-2333). The row is then read with get_account_list in its own office: for
+                    the aliases and the status get_account_info does not return, and for the
+                    filters of the list, so that a closed account is still not a contact."""
+                    try:
+                        account = (await self._admin_api.get_account_info(id=number)).get("account_info")
+                        if account and not _is_beneficiary(account) and account.get("i_master_account"):
+                            account = (await self._admin_api.get_account_info(
+                                i_account=account["i_master_account"]
+                            )).get("account_info")
+                        if not account or not _is_own_customer(account):
+                            return None
+                        rows = (await self._admin_api.get_account_list(
+                            int(account["i_customer"]), get_total=False, id=account["id"]
+                        )).get("account_list") or []
+                    except Exception as e:
+                        logging.debug(f"Failed to look up the account of phone number {number}: {e}")
+                        return None
+                    return next((row for row in rows if int(row["i_account"]) == int(account["i_account"])), None)
 
                 async def _lookup_number(number: str) -> dict[int, dict]:
                     result: dict[int, dict] = {}
-                    # 1. Search by main number
-                    for cust_id in all_i_customers:
-                        try:
-                            accounts = await self._admin_api.get_account_list(cust_id, get_total=False, id=number)
-                            for account in (accounts.get("account_list", []) or []):
-                                resolved = await _resolve_master(account)
-                                result[int(resolved["i_account"])] = resolved
-                        except Exception as e:
-                            logging.debug(f"Failed to fetch accounts for phone number {number} in customer {cust_id}: {e}")
+                    # 1. The account whose number - main or alias - it is
+                    account = await _account_by_number(number)
+                    if account:
+                        result[int(account["i_account"])] = account
                     # 2. Search by extension number (short dial)
                     if number in ext_number_to_i_account:
                         ext_i_account = ext_number_to_i_account[number]
@@ -1392,7 +1425,6 @@ class PortaSwitchAdapter(BSSAdapter):
                                 logging.debug(f"Failed to fetch account for extension number {number}: {e}")
                     return result
 
-                numbers_list = list(normalized_phone_numbers)
                 lookup_results = await _gather_limited(
                     [_lookup_number(n) for n in numbers_list], return_exceptions=True
                 )
@@ -1401,36 +1433,6 @@ class PortaSwitchAdapter(BSSAdapter):
                         logging.debug(f"Parallel number lookup error for {number}: {res}")
                         continue
                     found_accounts.update(res)
-
-                # 3. For alias/additional numbers not yet matched, try a direct account info lookup
-                found_numbers: set[str] = set()
-                for account in found_accounts.values():
-                    found_numbers.add(account.get("id", ""))
-                    for alias in account.get("alias_list", []):
-                        found_numbers.add(alias.get("id", ""))
-
-                async def _lookup_alias(number: str) -> tuple[int, dict] | None:
-                    try:
-                        account = (await self._admin_api.get_account_info(id=number)).get("account_info")
-                        if account:
-                            resolved = await _resolve_master(account)
-                            if _is_own_customer(resolved):
-                                return int(resolved["i_account"]), resolved
-                    except Exception as e:
-                        logging.debug(f"Account not found for alias/additional number {number}: {e}")
-                    return None
-
-                remaining = normalized_phone_numbers - found_numbers
-                if remaining:
-                    alias_results = await _gather_limited(
-                        [_lookup_alias(n) for n in remaining], return_exceptions=True
-                    )
-                    for pair in alias_results:
-                        if isinstance(pair, Exception):
-                            logging.debug(f"Alias lookup error: {pair}")
-                            continue
-                        if pair is not None:
-                            found_accounts[pair[0]] = pair[1]
 
                 contacts: list[ContactInfo] = [
                     Serializer.get_contact_info_by_account(account, i_account)
@@ -1562,19 +1564,20 @@ class PortaSwitchAdapter(BSSAdapter):
                             return False
                         return account["i_account"] != i_account
 
-                    # With sms_capable and the account cache on, a search runs over the cached
-                    # directory in memory: the total is exact and a keystroke costs no PortaBilling
-                    # calls (one extensions list in an office hierarchy), where the field queries
-                    # below may need a second, 1000-row round.
-                    search_in_cache = (
-                        bool(search) and sms_capable and self._portaswitch_settings.CONTACTS_CACHE_TTL > 0
-                    )
+                    # With the account cache on, a search runs over the cached directory in memory:
+                    # the total is exact and a keystroke costs no PortaBilling calls (one extensions
+                    # list in an office hierarchy). The field queries below cost five requests per
+                    # office for every keystroke - 2,080 for a hierarchy of 416 offices (WT-2117) -
+                    # and may need a second, 1000-row round (WT-1609).
+                    search_in_cache = bool(search) and self._portaswitch_settings.CONTACTS_CACHE_TTL > 0
                     search_truncated = False
                     search_fetch_limit = MAX_API_LIMIT
 
                     async def _search_cached_accounts(accounts: list[dict]) -> list[dict]:
                         """The in-memory counterpart of the field queries and the extension and
-                        alias-DID lookups of the search branch below."""
+                        alias-DID lookups of the search branch below, in their order: an account
+                        matched by its number comes before one matched by its name, as the field
+                        queries list them."""
                         needle = search.lower()
                         did = search.replace("+", "").strip()
                         # In an office hierarchy extensions live on the main office, so an
@@ -1592,15 +1595,22 @@ class PortaSwitchAdapter(BSSAdapter):
                             except Exception as e:
                                 logging.debug(f"Failed to fetch extensions for search: {e}")
 
-                        def _matches(account: dict) -> bool:
-                            if any(needle in str(account.get(field) or "").lower() for field in (
-                                    "id", "firstname", "lastname", "extension_name", "email", "extension_id")):
-                                return True
-                            if int(account["i_account"]) in ext_i_accounts:
-                                return True
-                            return bool(did) and any(alias.get("id") == did for alias in account.get("alias_list", []))
+                        fields = ("id", "firstname", "lastname", "extension_name", "email", "extension_id")
 
-                        return [a for a in accounts if _matches(a)]
+                        def _rank(account: dict) -> Optional[int]:
+                            """The position of the first thing `account` matches by, None if none."""
+                            for position, field in enumerate(fields):
+                                if needle in str(account.get(field) or "").lower():
+                                    return position
+                            if int(account["i_account"]) in ext_i_accounts:
+                                return len(fields)
+                            if did and any(alias.get("id") == did for alias in account.get("alias_list", [])):
+                                return len(fields) + 1
+                            return None
+
+                        ranked = [(rank, a) for a in accounts if (rank := _rank(a)) is not None]
+                        # sorted() is stable: within one rank the order of `accounts` stays
+                        return [a for _, a in sorted(ranked, key=lambda pair: pair[0])]
 
                     if search and not search_in_cache:
                         # Search mode: run all (customer × field) combinations in parallel.
@@ -3511,6 +3521,35 @@ class PortaSwitchAdapter(BSSAdapter):
         if ttl <= 0 or search_params:
             return await self._fetch_accounts_by_customer(i_customer, **search_params)
         return (await self._get_group_accounts(i_customer, [i_customer]))[0]
+
+    def _cached_accounts_by_number(self, offices: List[int], numbers: set[str]) -> dict[str, dict]:
+        """The cached accounts of `offices` that `numbers` belong to, by number (WT-2117).
+
+        A number is an account's main number, one of its aliases or its extension, as the
+        lookup by number on the switch matches them. Only entries still servable are read,
+        and none is read anew: an office that has none, or a number none of them has, is
+        left to the switch. Empty with the cache off.
+        """
+        ttl = self._portaswitch_settings.CONTACTS_CACHE_TTL
+        if ttl <= 0 or not numbers:
+            return {}
+        now = time.monotonic()
+        found: dict[str, dict] = {}
+        for office in offices:
+            entry = self._accounts_cache.get(office)
+            if entry is None or now - entry[0] >= ttl * ACCOUNTS_CACHE_STALE_FACTOR:
+                continue
+            for account in entry[1]:
+                own = (
+                    account.get("id"),
+                    account.get("extension_id"),
+                    *(alias.get("id") for alias in account.get("alias_list") or []),
+                )
+                for number in own:
+                    number = str(number or "").replace("+", "").strip()
+                    if number in numbers:
+                        found.setdefault(number, account)
+        return found
 
     async def _get_group_accounts(self, group: int, offices: List[int]) -> list[list[dict]]:
         """The account lists of a group of offices, one per office in the order of `offices`.

@@ -239,11 +239,17 @@ can come back short; lowering it would drop the last page from a client's count.
 ### A number lookup stays within the user's customer (WT-2333)
 
 `get_account_list` sends `get_only_real_accounts=1`, so an alias row is never in it, and
-`retrieve_contacts_v2` finds an alias number with `get_account_info(id=...)` - which has no
-customer filter and searches the whole switch. Its result, after `_resolve_master`, is kept
-only when `_is_own_customer` finds its `i_customer` in `all_i_customers`; without it a
-lookup exposed another customer's account, extension and SIP status. Do not drop the
-alias step to fix a leak, and do not add another one without the check.
+`retrieve_contacts_v2` finds a number - main or alias - with `get_account_info(id=...)`, which
+has no customer filter and searches the whole switch. Its result, an alias followed to its
+owner, is kept only when `_is_own_customer` finds its `i_customer` in `all_i_customers`;
+without it a lookup exposed another customer's account, extension and SIP status. Do not
+drop the check, and do not add another `get_account_info(id=...)` without it.
+
+`_account_by_number` then reads the row again with `get_account_list(id=...)` in the
+account's own office. That is not redundant: `get_account_info` has no `alias_list` and
+returns closed accounts too, and the list's filters are what keeps a closed account from
+being shown as a contact. Asking `get_account_list` of every office instead, as the lookup
+did before WT-2117, cost a request per office for every number.
 
 ### Contacts of an office hierarchy cost a request per office (WT-2117)
 
@@ -275,6 +281,13 @@ main office. So a hierarchy is read one office at a time, and the code keeps tha
 - **The hierarchy is cached** for `OFFICE_HIERARCHY_CACHE_TTL`, only with the cache on:
   `CONTACTS_CACHE_TTL=0` touches no cache state at all, which the tests that bypass
   `__init__` rely on. A failed lookup is not cached.
+- **Finding a contact does not ask every office.** A lookup by number costs
+  `get_account_info` plus one `get_account_list` (see the WT-2333 section), and with the
+  cache on a number of an account already cached costs nothing
+  (`_cached_accounts_by_number`, servable entries only, never a read). A `search` with
+  the cache on runs over the cached directory in memory, whatever `sms_capable` says; the
+  field queries cost five requests per office for every keystroke. The in-memory search
+  lists matches in the order of those queries' fields, a number match first.
 
 ### Callers waiting are keyed by `i_c_queue`, not `huntgroup_id`
 
