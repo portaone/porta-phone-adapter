@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c40930f9_96f58739",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 3581,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-27T20:37:41Z",
+      "side": 1,
+      "message": "The warm and refresh tasks are not cancelled on shutdown. The shutdown hook closes the shared HTTP clients while these tasks may still be mid-request, which logs errors on every deploy. Please cancel `_contacts_group_warm_tasks` and `_accounts_refresh_tasks` before the clients are closed.",
+      "revId": "19d15003485ea14c67ae985f460e9c7457c0ddc6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    }
+  ]
+}
