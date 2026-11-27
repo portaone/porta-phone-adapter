@@ -3,6 +3,23 @@
     {
       "unresolved": true,
       "key": {
+        "uuid": "769d2dc2_79abf79c",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 515,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-27T20:37:41Z",
+      "side": 1,
+      "message": "With several adapter replicas the cache and the warm task are per process. Behind a round-robin Service every replica sees the group within the hour and warms it on its own, so PortaBilling gets N × the offices every 9 × TTL, at N × `FANOUT_LIMIT` in parallel. Each replica also serves its own snapshot, up to 10 × TTL apart, so consecutive pages of the contact list can come from different snapshots and repeat or skip contacts, and a number lookup or search (373475) can answer differently per replica. Please document this next to `PORTASWITCH_CONTACTS_CACHE_TTL` in the README and in the commit message: with the cache on, run one replica, or accept N × load and inconsistent pages. Please also state the load the warm task puts on PortaBilling per replica.",
+      "revId": "19d15003485ea14c67ae985f460e9c7457c0ddc6",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
         "uuid": "c40930f9_96f58739",
         "filename": "app/bss/adapters/portaswitch/adapter.py",
         "patchSetId": 3
