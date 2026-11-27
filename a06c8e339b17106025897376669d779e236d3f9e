@@ -16,6 +16,23 @@
       "message": "With the cache on, the first search on a cold replica now reads the whole hierarchy directory: 418 calls, ~10.6 s for 416 offices on a lab etsys. Please state this in the commit message. Also state that with `CONTACTS_CACHE_TTL\u003d0` a search still costs five requests per office, so hierarchy customers need the cache on.",
       "revId": "a06c8e339b17106025897376669d779e236d3f9e",
       "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "aeef887e_97c57711",
+        "filename": "app/bss/adapters/portaswitch/adapter.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 3551,
+      "author": {
+        "id": 690
+      },
+      "writtenOn": "2026-11-27T20:37:42Z",
+      "side": 1,
+      "message": "`setdefault` keeps only the first account per number, and a number found in the cache is no longer sent to the switch. If a number is both one account\u0027s extension and another\u0027s main number or alias, the lookup used to return both and now returns one. Please keep all matches, e.g. `found.setdefault(number, []).append(account)`.",
+      "revId": "a06c8e339b17106025897376669d779e236d3f9e",
+      "serverId": "b3d83be1-eb64-49fe-9bf1-b81a817d2fd2"
     }
   ]
 }
